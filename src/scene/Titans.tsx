@@ -19,6 +19,20 @@ const BOX = new THREE.BoxGeometry(1, 1, 1)
 const SPHERE = new THREE.SphereGeometry(0.5, 16, 12)
 const CIRCLE = new THREE.CircleGeometry(1, 24)
 
+// soft radial sprite so steam points render as puffs, not hard squares
+const PUFF_TEX = (() => {
+  const c = document.createElement('canvas')
+  c.width = c.height = 64
+  const g = c.getContext('2d')!
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+  grad.addColorStop(0, 'rgba(255,255,255,1)')
+  grad.addColorStop(0.55, 'rgba(255,255,255,0.5)')
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  g.fillStyle = grad
+  g.fillRect(0, 0, 64, 64)
+  return new THREE.CanvasTexture(c)
+})()
+
 // Small helper: a MeshStandardMaterial with our house defaults.
 function mat(color: THREE.ColorRepresentation, opts?: Partial<THREE.MeshStandardMaterialParameters>) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0, ...opts })
@@ -40,50 +54,107 @@ function makeLimb(material: THREE.Material, w: number, len: number, d: number): 
 // PURE TITAN
 // ===========================================================================
 // Grotesque naked humanoid: oversized head, potbelly, dangling arms. All
-// proportions derive from `height` so the same rig covers 4–15m titans.
+// proportions derive from `height` so the same rig covers 4–15m titans. Every
+// pure is seeded per-index at build so skin tone, head/arm disproportion and
+// the shape of its permanent grin are deterministic yet individual — no two
+// read alike, and none of it changes at render time.
 type PureRig = {
   root: THREE.Group
   body: THREE.Group // everything above the feet — receives the bob/roll
   head: THREE.Group
+  jaw: THREE.Group // lower face — opens/snaps during the eating cycle
   torso: THREE.Mesh
   arms: [Limb, Limb]
   legs: [Limb, Limb]
-  flash: THREE.Mesh // crimson consume puff
+  flash: THREE.Mesh // crimson consume puff at the mouth
+  handStain: THREE.Mesh // crimson stain flash on the raised hand
   shadow: THREE.Mesh
+  skinMat: THREE.MeshStandardMaterial
   height: number
-  phase: number // random start so the 9 pures don't march in lockstep
+  phase: number // random start so the pures don't march in lockstep
+  // seeded disproportion + face character (baked once)
+  headMul: number // head-size multiplier 1.1–1.5
+  armMul: number // arm-length multiplier (sometimes past the knees)
+  bodyGaunt: number // 1 = normal build, <1 = gaunter (smiling titan)
+  grinWidth: number // fraction of face the mouth spans
+  smiling: boolean // pure-0 = Dina Fritz, the Smiling Titan
 }
 
-function buildPure(seed: number): PureRig {
-  const rand = mulberry32(seed * 2654435761 + 12345)
-  // Deterministic sickly skin tone in the requested range.
-  const tones = [0xcaa08a, 0xb98a70, 0xd4b09a, 0xc39a80, 0xbf9075]
-  const skin = new THREE.Color(tones[Math.floor(rand() * tones.length)])
+// Sickly palette: pallid grey-pink, jaundiced yellow, flushed sunburnt.
+const PURE_TONES = [
+  0xb9a7a2, // pallid grey-pink
+  0xa89a94, // ashen grey
+  0xc9b98a, // jaundiced yellow
+  0xbdae72, // sallow olive-yellow
+  0xc98a72, // flushed sunburnt
+  0xb87860, // raw sunburnt
+  0xc2a893, // waxy
+]
+
+function buildPure(index: number): PureRig {
+  const rand = mulberry32((index + 1) * 2654435761 + 12345)
+  const smiling = index === 0
+
+  // Deterministic sickly skin tone. The smiling titan is gaunter and paler.
+  const skin = new THREE.Color(PURE_TONES[Math.floor(rand() * PURE_TONES.length)])
+  if (smiling) skin.lerp(new THREE.Color(0xc7b3ab), 0.5)
   const skinMat = mat(skin)
+
+  // face materials — shared, static colours (no vertexColors: geometry has none)
+  const socketMat = mat(0x120a08, { roughness: 1 }) // sunken dark sockets
+  const pupilMat = new THREE.MeshBasicMaterial({ color: 0xfff2d8 }) // tiny bright pupils
+  const browMat = mat(new THREE.Color(skin).multiplyScalar(0.72), { roughness: 1 })
+  const mawMat = mat(0x0a0503, { roughness: 1 }) // dark mouth slab
+  const toothMat = mat(0xdcd2bf, { roughness: 0.6 }) // blocky teeth
+  const hairMat = mat(0x2e2416, { roughness: 1 }) // dark-blonde hair slab (smiling titan)
 
   const root = new THREE.Group()
   const body = new THREE.Group()
   root.add(body)
 
-  // Torso: potbelly — a squashed box, wider at the belly. Unit height 1 so we
-  // scale it live against `height` in the updater; here we bake proportions.
+  // Torso: potbelly — a squashed box, wider at the belly.
   const torso = new THREE.Mesh(BOX, skinMat)
   body.add(torso)
 
-  // Head group (so we can tilt it when eating). Oversized ~1/4 of height.
+  // Head group (tilts when eating). Children laid out in shapePure by index.
   const head = new THREE.Group()
-  const skull = new THREE.Mesh(SPHERE, skinMat)
+  const skull = new THREE.Mesh(SPHERE, skinMat) // [0]
   head.add(skull)
-  // Creepy grinning face: two dark eye dots + a wide mouth slit, on the +Z face.
-  const faceMat = mat(0x1a1210, { roughness: 1 })
-  const eyeL = new THREE.Mesh(BOX, faceMat)
-  const eyeR = new THREE.Mesh(BOX, faceMat)
-  const mouth = new THREE.Mesh(BOX, faceMat)
-  head.add(eyeL, eyeR, mouth)
+  const browRidge = new THREE.Mesh(BOX, browMat) // [1] heavy brow
+  const socketL = new THREE.Mesh(BOX, socketMat) // [2]
+  const socketR = new THREE.Mesh(BOX, socketMat) // [3]
+  const pupilL = new THREE.Mesh(BOX, pupilMat) // [4]
+  const pupilR = new THREE.Mesh(BOX, pupilMat) // [5]
+  const upperTeeth = new THREE.Mesh(BOX, mawMat) // [6] dark upper gum slab (teeth children of it)
+  head.add(browRidge, socketL, socketR, pupilL, pupilR, upperTeeth)
+
+  // Upper tooth row — small blocky white teeth across the grin. A handful of
+  // boxes parented to the upper gum slab so they ride with the face.
+  const TEETH = 7
+  for (let i = 0; i < TEETH; i++) {
+    upperTeeth.add(new THREE.Mesh(BOX, toothMat))
+  }
+
+  // Jaw group: the lower mouth slab + lower teeth, hinged so it drops open and
+  // snaps shut during the bite.
+  const jaw = new THREE.Group()
+  const lowerGum = new THREE.Mesh(BOX, mawMat)
+  jaw.add(lowerGum)
+  for (let i = 0; i < TEETH; i++) {
+    lowerGum.add(new THREE.Mesh(BOX, toothMat))
+  }
+  head.add(jaw)
+
+  // Long dark-blonde hair slab down the back — only the smiling titan.
+  if (smiling) {
+    const hair = new THREE.Mesh(BOX, hairMat)
+    hair.name = 'hair'
+    head.add(hair)
+  }
+
   body.add(head)
 
-  // Limbs (unit lengths; scaled in updater). Arms hang from shoulders, legs
-  // from hips. materials shared with skin.
+  // Limbs. Arms hang from shoulders, legs from hips. materials shared with skin.
   const armL = makeLimb(skinMat, 1, 1, 1)
   const armR = makeLimb(skinMat, 1, 1, 1)
   const legL = makeLimb(skinMat, 1, 1, 1)
@@ -96,6 +167,12 @@ function buildPure(seed: number): PureRig {
   }))
   body.add(flash)
 
+  // Crimson stain flash on the raised hand during the bite.
+  const handStain = new THREE.Mesh(CIRCLE, new THREE.MeshBasicMaterial({
+    color: 0x9e0f0a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+  }))
+  armR.pivot.add(handStain)
+
   // Blob shadow.
   const shadow = new THREE.Mesh(CIRCLE, new THREE.MeshBasicMaterial({
     color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false,
@@ -103,49 +180,116 @@ function buildPure(seed: number): PureRig {
   shadow.rotation.x = -Math.PI / 2
   root.add(shadow)
 
+  // Seeded disproportion. Smiling titan is extra-gaunt with a hungrier reach.
+  const headMul = 1.1 + rand() * 0.4 // 1.1–1.5
+  const armMul = 0.95 + rand() * 0.45 // up to ~1.4 — hangs past the knees
+  const bodyGaunt = smiling ? 0.82 : 0.94 + rand() * 0.12
+  const grinWidth = smiling ? 0.94 : 0.68 + rand() * 0.18
+
   return {
-    root, body, head, torso,
+    root, body, head, jaw, torso,
     arms: [armL, armR], legs: [legL, legR],
-    flash, shadow,
+    flash, handStain, shadow, skinMat,
     height: 8,
     phase: rand() * Math.PI * 2,
+    headMul, armMul, bodyGaunt, grinWidth, smiling,
   }
 }
 
 // Apply static proportions for a given height (called when height changes).
+// Also lays out the whole face — grin, teeth, sockets, brow, jaw — from the
+// per-titan seeded character baked in buildPure.
 function shapePure(rig: PureRig, h: number) {
   rig.height = h
-  const headSize = h * 0.26
+  const headSize = h * 0.24 * rig.headMul
   const torsoH = h * 0.42
   const legLen = h * 0.4
-  const armLen = h * 0.38
+  const armLen = h * 0.38 * rig.armMul
   const legTop = legLen // hips sit at leg length above ground
-  const torsoW = h * 0.34
-  const torsoD = h * 0.30
+  const torsoW = h * 0.34 * rig.bodyGaunt
+  const torsoD = h * 0.30 * rig.bodyGaunt
 
   rig.torso.scale.set(torsoW, torsoH, torsoD)
   rig.torso.position.y = legTop + torsoH / 2
 
   const head = rig.head
-  head.position.y = legTop + torsoH + headSize * 0.32
+  head.position.y = legTop + torsoH + headSize * 0.30
   const skull = head.children[0] as THREE.Mesh
   skull.scale.setScalar(headSize)
+
   // face features on the front (+Z) of the skull
-  const eR = headSize * 0.11
-  const eyeL = head.children[1] as THREE.Mesh
-  const eyeR = head.children[2] as THREE.Mesh
-  const mouth = head.children[3] as THREE.Mesh
-  eyeL.scale.set(eR, eR, eR * 0.4); eyeL.position.set(-headSize * 0.16, headSize * 0.06, headSize * 0.46)
-  eyeR.scale.set(eR, eR, eR * 0.4); eyeR.position.set(headSize * 0.16, headSize * 0.06, headSize * 0.46)
-  mouth.scale.set(headSize * 0.52, headSize * 0.12, eR * 0.4)
-  mouth.position.set(0, -headSize * 0.22, headSize * 0.46)
+  const faceZ = headSize * 0.44
+  const brow = head.children[1] as THREE.Mesh
+  const socketL = head.children[2] as THREE.Mesh
+  const socketR = head.children[3] as THREE.Mesh
+  const pupilL = head.children[4] as THREE.Mesh
+  const pupilR = head.children[5] as THREE.Mesh
+  const upperGum = head.children[6] as THREE.Mesh
+
+  // Heavy brow ridge overhanging the eyes.
+  brow.scale.set(headSize * 0.62, headSize * 0.10, headSize * 0.14)
+  brow.position.set(0, headSize * 0.20, faceZ * 0.92)
+
+  // Sunken dark eye sockets with a tiny bright pupil recessed inside each.
+  const socketW = headSize * 0.20
+  const eyeX = headSize * 0.17
+  const eyeY = headSize * 0.08
+  socketL.scale.set(socketW, socketW * 0.85, headSize * 0.14)
+  socketR.scale.set(socketW, socketW * 0.85, headSize * 0.14)
+  socketL.position.set(-eyeX, eyeY, faceZ * 0.86)
+  socketR.position.set(eyeX, eyeY, faceZ * 0.86)
+  const pupil = headSize * 0.05
+  pupilL.scale.setScalar(pupil)
+  pupilR.scale.setScalar(pupil)
+  pupilL.position.set(-eyeX, eyeY, faceZ * 0.90)
+  pupilR.position.set(eyeX, eyeY, faceZ * 0.90)
+
+  // The grin. A wide dark upper gum slab spanning most of the face, dropped
+  // low, with a row of small blocky teeth hanging below it. The jaw mirrors it.
+  const grinW = headSize * rig.grinWidth
+  const gumH = headSize * (rig.smiling ? 0.16 : 0.12)
+  const mouthY = -headSize * 0.20
+  upperGum.scale.set(grinW, gumH, headSize * 0.10)
+  upperGum.position.set(0, mouthY, faceZ * 0.88)
+
+  const toothW = grinW / 8
+  const toothH = headSize * 0.10
+  const toothD = headSize * 0.06
+  // Teeth are children of the gum, so they inherit its local scale — divide the
+  // intended world size back out so every tooth is an even little block.
+  const layTeeth = (gum: THREE.Mesh, dir: number) => {
+    const teeth = gum.children as unknown as THREE.Mesh[]
+    for (let i = 0; i < teeth.length; i++) {
+      const th = teeth[i]
+      th.scale.set((toothW * 0.72) / gum.scale.x, toothH / gum.scale.y, toothD / gum.scale.z)
+      const tx = (i - (teeth.length - 1) / 2) * (grinW / teeth.length)
+      // dir: upper teeth (-1) hang below the gum, lower teeth (+1) rise above it
+      th.position.set(tx / gum.scale.x, (dir * (gumH * 0.5 + toothH * 0.4)) / gum.scale.y, (headSize * 0.02) / gum.scale.z)
+    }
+  }
+  layTeeth(upperGum, -1) // upper teeth point down
+
+  // Jaw (lower mouth) hinged just below the upper gum.
+  const jaw = rig.jaw
+  jaw.position.set(0, mouthY, faceZ * 0.30)
+  const lowerGum = jaw.children[0] as THREE.Mesh
+  lowerGum.scale.set(grinW, gumH, headSize * 0.10)
+  lowerGum.position.set(0, -gumH * 0.5, faceZ * 0.58)
+  layTeeth(lowerGum, 1) // lower teeth point up
+
+  // Long hair slab down the back (smiling titan only).
+  const hair = head.getObjectByName('hair') as THREE.Mesh | undefined
+  if (hair) {
+    hair.scale.set(headSize * 0.7, headSize * 1.7, headSize * 0.35)
+    hair.position.set(0, -headSize * 0.55, -faceZ * 0.7)
+  }
 
   // shoulders at torso top, slightly inside torso width
   const shoulderY = legTop + torsoH * 0.92
   const shoulderX = torsoW * 0.55
   rig.arms[0].pivot.position.set(-shoulderX, shoulderY, 0)
   rig.arms[1].pivot.position.set(shoulderX, shoulderY, 0)
-  for (const a of rig.arms) (a.mesh.scale.set(h * 0.11, armLen, h * 0.11))
+  for (const a of rig.arms) (a.mesh.scale.set(h * 0.10, armLen, h * 0.10))
 
   const hipX = torsoW * 0.28
   rig.legs[0].pivot.position.set(-hipX, legTop, 0)
@@ -154,6 +298,10 @@ function shapePure(rig: PureRig, h: number) {
 
   rig.flash.scale.setScalar(headSize * 0.9)
   rig.flash.position.set(0, head.position.y - headSize * 0.2, headSize * 0.6)
+
+  // hand stain sits at the end of the right arm
+  rig.handStain.scale.setScalar(h * 0.06)
+  rig.handStain.position.set(0, -armLen, h * 0.06)
 
   rig.shadow.scale.setScalar(h * 0.22)
   rig.shadow.position.y = 0.15
@@ -171,37 +319,69 @@ function updatePure(rig: PureRig, st: TitanState, t: number) {
 
   const h = st.height
   const eat = st.eating
+  const fm = rig.flash.material as THREE.MeshBasicMaterial
+  const hsm = rig.handStain.material as THREE.MeshBasicMaterial
 
   if (eat > 0) {
-    // Feeding: freeze the gait, raise both arms toward the mouth, tilt head down.
-    // raise 0->0.4, hold 0.4->0.8, lower after.
+    // Feeding, staged as a brutal read:
+    //   0.00–0.40  the raised hand lifts the victim up toward the tilted-back head
+    //   0.40–0.55  head fully back, jaw yawns wide open over the dangling victim
+    //   0.55–0.70  the jaw SNAPS shut — a hard, fast slam
+    //   0.55–0.90  crimson bursts on mouth and hand
+    //   0.70–1.00  head rocks in a couple of sharp post-bite shakes
+    rig.legs[0].pivot.rotation.set(0, 0, 0)
+    rig.legs[1].pivot.rotation.set(0, 0, 0)
+    rig.body.rotation.z = 0
+    rig.body.position.y = 0
+
+    // Right arm raises the victim high and inward; left arm follows loosely.
     let raise: number
     if (eat < 0.4) raise = eat / 0.4
     else if (eat < 0.8) raise = 1
     else raise = Math.max(0, 1 - (eat - 0.8) / 0.2)
-    const armAngle = THREE.MathUtils.lerp(0.15, -2.5, raise) // rotate arms up & in
-    rig.arms[0].pivot.rotation.set(armAngle, 0, 0.25)
-    rig.arms[1].pivot.rotation.set(armAngle, 0, -0.25)
-    rig.legs[0].pivot.rotation.set(0, 0, 0)
-    rig.legs[1].pivot.rotation.set(0, 0, 0)
-    rig.head.rotation.x = 0.5 * raise
-    rig.body.rotation.z = 0
-    rig.body.position.y = 0
+    const armAngle = THREE.MathUtils.lerp(0.15, -2.6, raise)
+    rig.arms[1].pivot.rotation.set(armAngle, 0, -0.30)
+    rig.arms[0].pivot.rotation.set(THREE.MathUtils.lerp(0.15, -1.8, raise), 0, 0.25)
 
-    // crimson consume puff while the victim is bitten.
-    const fm = rig.flash.material as THREE.MeshBasicMaterial
-    if (eat >= 0.55 && eat <= 0.85) {
-      const p = (eat - 0.55) / 0.3
-      fm.opacity = Math.sin(p * Math.PI) * (0.7 + 0.3 * Math.sin(t * 30))
+    // Head tilts back to receive, then whips forward on the bite.
+    let headX: number
+    if (eat < 0.55) headX = -0.55 * (eat / 0.55) // tilt back
+    else if (eat < 0.70) headX = -0.55 + 0.75 * ((eat - 0.55) / 0.15) // snap forward+down
+    else {
+      // post-bite: sharp diminishing shakes
+      const p = (eat - 0.70) / 0.30
+      headX = 0.20 + Math.sin(p * Math.PI * 3) * 0.22 * (1 - p)
+    }
+    rig.head.rotation.x = headX
+    rig.head.rotation.z = eat >= 0.70 ? Math.sin((eat - 0.70) / 0.30 * Math.PI * 3) * 0.12 * (1 - (eat - 0.70) / 0.30) : 0
+
+    // Jaw: yawns open toward the bite, then slams shut fast at 0.55–0.70.
+    let jawOpen: number
+    if (eat < 0.4) jawOpen = 0.15 + 0.85 * (eat / 0.4)
+    else if (eat < 0.55) jawOpen = 1
+    else if (eat < 0.70) jawOpen = 1 - (eat - 0.55) / 0.15 // SNAP shut
+    else jawOpen = 0.05 + Math.max(0, Math.sin((eat - 0.70) / 0.30 * Math.PI * 3)) * 0.10 // small chews
+    rig.jaw.rotation.x = jawOpen * 0.7
+
+    // crimson consume puff at the mouth + stain on the hand during the bite.
+    if (eat >= 0.55 && eat <= 0.90) {
+      const p = (eat - 0.55) / 0.35
+      const flick = 0.7 + 0.3 * Math.sin(t * 30)
+      fm.opacity = Math.sin(p * Math.PI) * flick
       rig.flash.scale.setScalar(h * 0.26 * (0.7 + p * 0.6))
+      hsm.opacity = Math.sin(p * Math.PI) * 0.85
     } else {
       fm.opacity = 0
+      hsm.opacity = 0
     }
     return
   }
 
-  // reset flash when not eating
-  ;(rig.flash.material as THREE.MeshBasicMaterial).opacity = 0
+  // reset consume flash + jaw when not eating
+  fm.opacity = 0
+  hsm.opacity = 0
+  rig.jaw.rotation.x = 0
+  rig.head.rotation.z = 0
 
   if (st.walkSpeed > 0) {
     // Lumbering walk. Slow, heavy stride; speed inversely scaled by height so
@@ -255,9 +435,14 @@ function buildColossal(): ColossalRig {
   const body = new THREE.Group()
   root.add(body)
 
-  const muscle = mat(0x8f3b2e, { emissive: new THREE.Color(0x3a0e08), emissiveIntensity: 0.4, transparent: true })
-  const shade = mat(0x6e2a22, { emissive: new THREE.Color(0x3a0e08), emissiveIntensity: 0.3, transparent: true })
-  const bodyMats = [muscle, shade]
+  // Deeper skinless look: darker raw sinew reds with a faint ember-orange glow
+  // bleeding out of the seams.
+  const muscle = mat(0x6f2a1e, { emissive: new THREE.Color(0x4a1305), emissiveIntensity: 0.55, transparent: true })
+  const shade = mat(0x511c16, { emissive: new THREE.Color(0x3a0e05), emissiveIntensity: 0.4, transparent: true })
+  const fiber = mat(0x3a1310, { emissive: new THREE.Color(0x2a0a04), emissiveIntensity: 0.35, transparent: true }) // dark muscle-fiber striation
+  const ember = mat(0x7a2408, { emissive: new THREE.Color(0xc7440e), emissiveIntensity: 1.4, transparent: true }) // glowing body seams
+  const bone = mat(0xd8cbb2, { roughness: 0.6, transparent: true }) // exposed jaw teeth
+  const bodyMats = [muscle, shade, fiber, ember, bone]
 
   const torsoH = h * 0.42
   const legLen = h * 0.46
@@ -291,6 +476,40 @@ function buildColossal(): ColossalRig {
   neck.position.y = legTop + torsoH + h * 0.025
   body.add(neck)
 
+  // Exposed lipless jaw — two rows of bone-white teeth clenched across the
+  // lower head, no lips over them.
+  const headY = legTop + torsoH + h * 0.10
+  const upperTeeth = new THREE.Mesh(BOX, bone)
+  upperTeeth.scale.set(h * 0.10, h * 0.018, h * 0.02)
+  upperTeeth.position.set(0, headY - h * 0.03, h * 0.062)
+  const lowerTeeth = new THREE.Mesh(BOX, bone)
+  lowerTeeth.scale.set(h * 0.10, h * 0.018, h * 0.02)
+  lowerTeeth.position.set(0, headY - h * 0.055, h * 0.062)
+  body.add(upperTeeth, lowerTeeth)
+
+  // Vertical muscle-fiber striation: thin darker boxes running down the torso
+  // and the front of each limb. Purely additive detail on the existing rig.
+  for (let i = 0; i < 5; i++) {
+    const strip = new THREE.Mesh(BOX, fiber)
+    strip.scale.set(h * 0.012, torsoH * 0.9, h * 0.005)
+    strip.position.set((i - 2) * h * 0.045, legTop + torsoH * 0.5, h * 0.072)
+    body.add(strip)
+  }
+
+  // Ember-glow seams: a few emissive slivers along the chest centreline and
+  // shoulder joints, so heat looks like it's leaking through the sinew.
+  const seamSpecs: Array<[number, number, number, number]> = [
+    [0, legTop + torsoH * 0.7, h * 0.008, torsoH * 0.5],
+    [-h * 0.14, legTop + torsoH * 0.9, h * 0.006, h * 0.10],
+    [h * 0.14, legTop + torsoH * 0.9, h * 0.006, h * 0.10],
+  ]
+  for (const [sx, sy, sw, sh] of seamSpecs) {
+    const seam = new THREE.Mesh(BOX, ember)
+    seam.scale.set(sw, sh, h * 0.004)
+    seam.position.set(sx, sy, h * 0.073)
+    body.add(seam)
+  }
+
   // arms — long and lean, hang clear of the torso
   const armLen = h * 0.46
   const armL = makeLimb(muscle, h * 0.06, armLen, h * 0.06)
@@ -316,8 +535,8 @@ function buildColossal(): ColossalRig {
   legKick.position.set(h * 0.062, legTop, 0)
   body.add(legKick)
 
-  // Steam: ~40 white billboard points drifting up around head/shoulders/back.
-  const N = 44
+  // Steam: dense white billboard points drifting up around head/shoulders/back.
+  const N = 96
   const positions = new Float32Array(N * 3)
   const data = new Float32Array(N * 5)
   const seed = mulberry32(9182736)
@@ -337,8 +556,8 @@ function buildColossal(): ColossalRig {
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   const steamMat = new THREE.PointsMaterial({
-    color: 0xffffff, size: h * 0.13, transparent: true, opacity: 0.25,
-    depthWrite: false, sizeAttenuation: true,
+    color: 0xf2ece2, size: h * 0.18, transparent: true, opacity: 0.4,
+    depthWrite: false, sizeAttenuation: true, map: PUFF_TEX,
   })
   const steam = new THREE.Points(geo, steamMat)
   root.add(steam)
@@ -391,8 +610,8 @@ function updateColossal(rig: ColossalRig, st: TitanState | null, steamAmt: numbe
   }
   pos.needsUpdate = true
   const sm = rig.steam.material as THREE.PointsMaterial
-  sm.opacity = Math.min(1, amt * 0.6 + dissolve * 0.4)
-  sm.size = rig.h * 0.13 * (1 + dissolve * 1.2)
+  sm.opacity = Math.min(1, 0.28 + amt * 0.5 + dissolve * 0.4) // always smoldering
+  sm.size = rig.h * 0.15 * (1 + dissolve * 1.2)
 
   // fade body away as it dissolves
   const bodyOpacity = 1 - dissolve
@@ -419,8 +638,10 @@ function buildArmored(): ArmoredRig {
   const body = new THREE.Group()
   root.add(body)
 
-  const sinew = mat(0x4a2f28)
-  const plate = mat(0xe8d9c8, { roughness: 0.7 })
+  const sinew = mat(0x2e1c17) // dark sinew showing between the plates
+  const plate = mat(0xece0d0, { roughness: 0.7 })
+  const edge = mat(0xfff6e8, { roughness: 0.4, emissive: new THREE.Color(0x2a2013), emissiveIntensity: 0.25 }) // bone-white plate edge highlight
+  const eyeGlow = mat(0x8a7a20, { emissive: new THREE.Color(0xf2e35a), emissiveIntensity: 1.6 }) // glowing pale-yellow eyes
 
   const torsoH = h * 0.4
   const legLen = h * 0.44
@@ -446,14 +667,30 @@ function buildArmored(): ArmoredRig {
   shoulderPlate.position.set(0, legTop + torsoH * 0.95, 0)
   body.add(shoulderPlate)
 
+  // Bone-white edge highlights: thin bright rims proud of each plate's lower lip.
+  const edgeTrim = (w: number, y: number, z: number) => {
+    const e = new THREE.Mesh(BOX, edge)
+    e.scale.set(w, h * 0.012, h * 0.02)
+    e.position.set(0, y, z)
+    body.add(e)
+  }
+  edgeTrim(torsoW * 1.08, legTop + torsoH * 0.65 - torsoH * 0.30, h * 0.17)
+  edgeTrim(torsoW * 0.9, legTop + torsoH * 0.28 - torsoH * 0.175, h * 0.155)
+  edgeTrim(torsoW * 1.25, legTop + torsoH * 0.95 - torsoH * 0.11, h * 0.16)
+
+  // Dark sinew showing in the gap between chest and ab plates.
+  const gap = new THREE.Mesh(BOX, sinew)
+  gap.scale.set(torsoW * 0.85, torsoH * 0.10, h * 0.27)
+  gap.position.set(0, legTop + torsoH * 0.46, h * 0.015)
+  body.add(gap)
+
   // plated head with dark eye slits
   const head = new THREE.Group()
   const skull = new THREE.Mesh(BOX, plate)
   skull.scale.set(h * 0.15, h * 0.15, h * 0.16)
   head.add(skull)
-  const slitMat = mat(0x0a0605, { roughness: 1 })
-  const slitL = new THREE.Mesh(BOX, slitMat)
-  const slitR = new THREE.Mesh(BOX, slitMat)
+  const slitL = new THREE.Mesh(BOX, eyeGlow)
+  const slitR = new THREE.Mesh(BOX, eyeGlow)
   slitL.scale.set(h * 0.05, h * 0.02, h * 0.02); slitL.position.set(-h * 0.04, 0, h * 0.08)
   slitR.scale.set(h * 0.05, h * 0.02, h * 0.02); slitR.position.set(h * 0.04, 0, h * 0.08)
   head.add(slitL, slitR)
@@ -522,7 +759,13 @@ function updateArmored(rig: ArmoredRig, st: TitanState | null, t: number) {
 // ===========================================================================
 export function Titans() {
   // Build every rig exactly once, then animate purely through refs in useFrame.
-  const pures = useMemo(() => Array.from({ length: 9 }, (_, i) => buildPure(i + 1)), [])
+  // Pure count is taken from the incident frame (ids pure-0..pure-N) so nothing
+  // is hardcoded to a fixed cast size — the driver currently emits 13.
+  const pureCount = useMemo(() => Math.max(getFrame().pures.length, 1), [])
+  const pures = useMemo(
+    () => Array.from({ length: pureCount }, (_, i) => buildPure(i)),
+    [pureCount],
+  )
   const colossal = useMemo(() => buildColossal(), [])
   const armored = useMemo(() => buildArmored(), [])
 

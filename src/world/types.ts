@@ -47,6 +47,8 @@ export interface IncidentFrame {
   colossal: TitanState | null
   /** 0..1 steam burst while the colossal dissolves */
   colossalSteam: number
+  /** 0..1 how far the scene has descended into hell — drives sky/fog/light grading */
+  atmosphere: number
   armored: TitanState | null
   pures: TitanState[]
   people: PersonState[]

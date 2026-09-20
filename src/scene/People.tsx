@@ -1,4 +1,4 @@
-// The Shiganshina crowd: 320 instanced civilians driven by the incident frame.
+// The Shiganshina crowd: instanced civilians driven by the incident frame.
 // Position/yaw come from frame.people (a stable array mutated in place at 60fps).
 // Read ONLY inside useFrame; never lift frame data into React state.
 // Zero allocations per frame — temp Object3D + Color reused.
@@ -15,7 +15,8 @@ import {
 import { getFrame } from '../incidents/driver'
 import { mulberry32 } from '../world/rng'
 
-const COUNT = 320
+// must match the crowd size built in incidents/ep1.ts
+const COUNT = 850
 
 // muted period clothing: browns, faded blues, greys, occasional dark red
 const CLOTHES = [
@@ -157,7 +158,7 @@ export function People() {
         castShadow
         frustumCulled={false}
       >
-        <meshStandardMaterial vertexColors roughness={0.95} metalness={0} />
+        <meshStandardMaterial roughness={0.95} metalness={0} />
       </instancedMesh>
       <instancedMesh
         ref={headRef}
@@ -165,7 +166,7 @@ export function People() {
         castShadow
         frustumCulled={false}
       >
-        <meshStandardMaterial vertexColors roughness={0.9} metalness={0} />
+        <meshStandardMaterial roughness={0.9} metalness={0} />
       </instancedMesh>
     </group>
   )

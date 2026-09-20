@@ -1,7 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParadis } from '../state/store'
-import { EP1_DURATION, EP1_META } from '../incidents/ep1'
+import { EP1_DURATION, EP1_META, EP1_AFTERMATH } from '../incidents/ep1'
 import './hud.css'
+
+// ---------------------------------------------------------------------------
+// share intent — Wall Maria fall, no long dashes in the copy
+// ---------------------------------------------------------------------------
+const SHARE_TEXT =
+  'I just watched Wall Maria fall. Real scale, a 60 m Colossal Titan against a 50 m wall, 850 people in the streets. In the browser.\n\nhttps://paradis-sepia.vercel.app'
+const SHARE_URL = `https://twitter.com/intent/tweet?text=${encodeURIComponent(SHARE_TEXT)}`
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -26,8 +33,8 @@ function Wordmark() {
   return (
     <div className="hud-wordmark">
       <h1 className="hud-title">PARADIS</h1>
-      <p className="hud-subtitle">An Attack on Titan world — Year 845</p>
-      <p className="hud-tagline">Explore freely. Click an incident to watch it unfold.</p>
+      <p className="hud-subtitle">Survey Corps field record · Year 845</p>
+      <p className="hud-tagline">Explore the walls. Open an incident to watch it burn.</p>
     </div>
   )
 }
@@ -48,14 +55,26 @@ function EpisodesPanel() {
 
   return (
     <div className="hud-panel hud-episodes">
-      <button
-        className="hud-panel-header"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        <span className="hud-panel-label">Field Report · Episodes</span>
-        <span className="hud-panel-toggle">{open ? '–' : '+'}</span>
-      </button>
+      <div className="hud-panel-header">
+        <button
+          className="hud-panel-headbtn"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          <span className="hud-panel-label">Casualty Report · Incidents</span>
+          <span className="hud-panel-toggle">{open ? '–' : '+'}</span>
+        </button>
+        <a
+          className="hud-share-icon"
+          href={SHARE_URL}
+          target="_blank"
+          rel="noopener"
+          aria-label="Post on X"
+          title="Post on X"
+        >
+          𝕏
+        </a>
+      </div>
       {open && (
         <ul className="hud-ep-list">
           <li>
@@ -75,7 +94,7 @@ function EpisodesPanel() {
                 <div className="hud-ep hud-ep-locked" aria-disabled="true">
                   <span className="hud-ep-no">{no}</span>
                   <span className="hud-ep-name">{name}</span>
-                  <span className="hud-ep-soon">SOON</span>
+                  <span className="hud-ep-soon">SEALED</span>
                 </div>
               </li>
             )
@@ -117,8 +136,10 @@ function PlaybackBar() {
   const incident = useParadis((s) => s.incident)
   const playing = useParadis((s) => s.playing)
   const speed = useParadis((s) => s.speed)
+  const cinematic = useParadis((s) => s.cinematic)
   const setPlaying = useParadis((s) => s.setPlaying)
   const setSpeed = useParadis((s) => s.setSpeed)
+  const setCinematic = useParadis((s) => s.setCinematic)
   const stopIncident = useParadis((s) => s.stopIncident)
   const requestFly = useParadis((s) => s.requestFly)
 
@@ -145,6 +166,14 @@ function PlaybackBar() {
       <button className="hud-btn hud-btn-speed" onClick={cycleSpeed} aria-label="Playback speed">
         {speed}×
       </button>
+      <button
+        className={`hud-btn hud-btn-director${cinematic ? ' hud-btn-director-on' : ''}`}
+        onClick={() => setCinematic(!cinematic)}
+        aria-pressed={cinematic}
+        aria-label="Director camera"
+      >
+        DIRECTOR
+      </button>
       <button className="hud-btn hud-btn-icon hud-btn-exit" onClick={exit} aria-label="Exit incident">
         ✕
       </button>
@@ -165,17 +194,44 @@ function CaptionBar() {
 }
 
 // ---------------------------------------------------------------------------
+// cinematic letterbox — black bars while the director cam runs an incident
+// ---------------------------------------------------------------------------
+function Letterbox() {
+  const cinematic = useParadis((s) => s.cinematic)
+  const incident = useParadis((s) => s.incident)
+  const endCard = useParadis((s) => s.endCard)
+  const on = cinematic && incident !== null && !endCard
+  return (
+    <div className={`hud-letterbox${on ? ' hud-letterbox-on' : ''}`} aria-hidden="true">
+      <div className="hud-letterbox-bar hud-letterbox-top" />
+      <div className="hud-letterbox-bar hud-letterbox-bottom" />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // casualties counter (top-right) — only when active and deaths > 0
 // ---------------------------------------------------------------------------
 function Casualties() {
   const incident = useParadis((s) => s.incident)
   const deaths = useParadis((s) => s.deaths)
+  const prev = useRef(deaths)
+  const [pulse, setPulse] = useState(false)
+
+  useEffect(() => {
+    if (deaths !== prev.current) {
+      prev.current = deaths
+      setPulse(true)
+      const id = setTimeout(() => setPulse(false), 260)
+      return () => clearTimeout(id)
+    }
+  }, [deaths])
+
   if (incident === null || deaths <= 0) return null
   return (
     <div className="hud-casualties">
-      <span className="hud-casualties-label">Casualties</span>
-      <span className="hud-casualties-sep">▸</span>
-      <span key={deaths} className="hud-casualties-count">
+      <span className="hud-casualties-label">Confirmed Eaten</span>
+      <span className={`hud-casualties-count${pulse ? ' hud-casualties-pulse' : ''}`}>
         {deaths}
       </span>
     </div>
@@ -183,7 +239,7 @@ function Casualties() {
 }
 
 // ---------------------------------------------------------------------------
-// end card — appears when endCard is true
+// end card — memorial / aftermath, appears when endCard is true
 // ---------------------------------------------------------------------------
 function EndCard() {
   const endCard = useParadis((s) => s.endCard)
@@ -203,12 +259,18 @@ function EndCard() {
   return (
     <div className={`hud-endcard${endCard ? ' hud-endcard-on' : ''}`} aria-hidden={!endCard}>
       <div className="hud-endcard-inner">
+        <p className="hud-endcard-kicker">Year 845 · Casualty Report</p>
         <h2 className="hud-endcard-title">WALL MARIA HAS FALLEN</h2>
-        <p className="hud-endcard-body">
-          That day, humanity received a grim reminder. Survivors fled behind Wall Rose.
-          <br />— Year 845
+        <p className="hud-endcard-toll">
+          Confirmed eaten on this record <span>{deaths}</span>
         </p>
-        <p className="hud-endcard-toll">Casualties recorded ▸ {deaths}</p>
+        <ul className="hud-endcard-stats">
+          {EP1_AFTERMATH.map((line) => (
+            <li key={line} className="hud-endcard-stat">
+              {line}
+            </li>
+          ))}
+        </ul>
         <div className="hud-endcard-actions">
           <button className="hud-btn hud-btn-wide" onClick={replay}>
             REPLAY
@@ -216,6 +278,14 @@ function EndCard() {
           <button className="hud-btn hud-btn-wide" onClick={explore}>
             EXPLORE THE RUINS
           </button>
+          <a
+            className="hud-btn hud-btn-wide hud-btn-share"
+            href={SHARE_URL}
+            target="_blank"
+            rel="noopener"
+          >
+            POST ON 𝕏
+          </a>
         </div>
       </div>
     </div>
@@ -228,7 +298,7 @@ function EndCard() {
 function Footnote() {
   return (
     <div className="hud-footnote">
-      <p>True vertical scale — walls 50 m, Colossal Titan 60 m · overland distances compressed 40:1</p>
+      <p>True vertical scale · walls 50 m, Colossal Titan 60 m · overland distances compressed 40:1</p>
       <p>Drag to orbit · scroll to zoom · right-drag to pan</p>
     </div>
   )
@@ -240,6 +310,7 @@ function Footnote() {
 export function HUD() {
   return (
     <div className="hud-root">
+      <Letterbox />
       <Wordmark />
       <Casualties />
       <EpisodesPanel />

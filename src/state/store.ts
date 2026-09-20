@@ -20,6 +20,8 @@ interface ParadisState {
   caption: string | null
   deaths: number
   endCard: boolean
+  /** director cam: scripted shots while an incident plays; any drag/wheel breaks out */
+  cinematic: boolean
   // ---- camera ----
   flyTo: FlyTarget | null
   /** bumped every time a fly is requested so the rig re-triggers */
@@ -32,6 +34,7 @@ interface ParadisState {
   setSpeed: (s: number) => void
   setHud: (h: { caption: string | null; deaths: number; endCard: boolean }) => void
   requestFly: (f: FlyTarget) => void
+  setCinematic: (c: boolean) => void
 }
 
 export const useParadis = create<ParadisState>((set, get) => ({
@@ -42,13 +45,14 @@ export const useParadis = create<ParadisState>((set, get) => ({
   caption: null,
   deaths: 0,
   endCard: false,
+  cinematic: false,
   flyTo: null,
   flySeq: 0,
 
   startIncident: (id) =>
-    set({ incident: id, t: 0, playing: true, deaths: 0, caption: null, endCard: false }),
+    set({ incident: id, t: 0, playing: true, deaths: 0, caption: null, endCard: false, cinematic: true }),
   stopIncident: () =>
-    set({ incident: null, playing: false, t: 0, deaths: 0, caption: null, endCard: false }),
+    set({ incident: null, playing: false, t: 0, deaths: 0, caption: null, endCard: false, cinematic: false }),
   setPlaying: (p) => set({ playing: p }),
   seek: (t) => set({ t, endCard: false }),
   setSpeed: (s) => set({ speed: s }),
@@ -57,6 +61,7 @@ export const useParadis = create<ParadisState>((set, get) => ({
     if (s.caption !== h.caption || s.deaths !== h.deaths || s.endCard !== h.endCard) set(h)
   },
   requestFly: (f) => set({ flyTo: f, flySeq: get().flySeq + 1 }),
+  setCinematic: (c) => set({ cinematic: c }),
 }))
 
 // debug/QA access from the browser console

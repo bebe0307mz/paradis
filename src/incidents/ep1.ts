@@ -44,24 +44,26 @@ const EAT_DUR = 2.8
 
 function buildPureTitans(): PureTitan[] {
   const titans: PureTitan[] = []
-  const n = 9
+  const n = 13
   for (let k = 0; k < n; k++) {
     const height = range(rand, 5, 15)
-    const speed = 1.6 + height * 0.28
-    const spawnT = 18 + k * 3.6 + range(rand, 0, 1.5)
+    // fast enough that every eat-window lands INSIDE the 80s timeline
+    const speed = 3.5 + height * 0.45
+    const spawnT = 16.5 + k * 2.4 + range(rand, 0, 1.2)
     const frames: Keyframe[] = []
     const eats: PureTitan['eats'] = []
     let x = range(rand, -14, 14)
     let z = OUTER.z - 8
     let t = spawnT
     frames.push({ t, x, z })
-    // wander inward toward the town in 3 legs with lateral drift
+    // stalk inward toward the town in 4 legs with lateral drift
     const legs = [
-      { z: OUTER.z - range(rand, 120, 180), drift: 90 },
-      { z: OUTER.z - range(rand, 260, 330), drift: 140 },
-      { z: GATE.z + range(rand, 40, 120), drift: 170 },
+      { z: OUTER.z - range(rand, 70, 120), drift: 90 },
+      { z: OUTER.z - range(rand, 180, 240), drift: 150 },
+      { z: OUTER.z - range(rand, 300, 360), drift: 180 },
+      { z: GATE.z + range(rand, 50, 130), drift: 170 },
     ]
-    const hunter = k < 7 // first 7 titans each eat 2 people
+    const hunter = k < 9
     for (let li = 0; li < legs.length; li++) {
       const nx = range(rand, -legs[li].drift, legs[li].drift)
       const nz = legs[li].z
@@ -70,7 +72,9 @@ function buildPureTitans(): PureTitan[] {
       frames.push({ t, x: nx, z: nz })
       x = nx
       z = nz
-      if (hunter && li < 2) {
+      // hunters feed after early legs; the first few keep feeding deeper in
+      const feeds = hunter && (li < 2 || (k < 4 && li === 2))
+      if (feeds && t < EP1_DURATION - 12) {
         eats.push({ start: t, end: t + EAT_DUR, x, z })
         t += EAT_DUR
         frames.push({ t, x, z })
@@ -100,7 +104,7 @@ interface Person {
 
 function buildPeople(): Person[] {
   const people: Person[] = []
-  const n = 320
+  const n = 850
   for (let i = 0; i < n; i++) {
     // homes fill the semicircular district (flat side = Wall Maria, bulge outward)
     const a = range(rand, -1.35, 1.35) // angle from +Z at the inner gate
@@ -145,6 +149,46 @@ function buildPeople(): Person[] {
 
 const PEOPLE = buildPeople()
 const VICTIM_COUNT = PEOPLE.filter((p) => p.grabT !== undefined).length
+
+// ---------------------------------------------------------------------------
+// static event exports — Gore/Fires render from these + frame.t (deterministic)
+// ---------------------------------------------------------------------------
+
+export interface KillEvent {
+  /** the bite moment — the person reaches the mouth at grabT + 1.6 */
+  t: number
+  x: number
+  z: number
+  /** mouth height of the titan doing the eating */
+  mouthY: number
+}
+
+/** every on-screen death, in no particular order */
+export const KILL_EVENTS: KillEvent[] = PEOPLE.filter(
+  (p) => p.grabT !== undefined && p.grabT + 1.6 <= EP1_DURATION,
+).map((p) => ({
+  t: p.grabT! + 1.6,
+  x: p.grabX!,
+  z: p.grabZ!,
+  mouthY: (p.titanHeight ?? 8) * 0.86,
+}))
+
+export interface FireSpot {
+  x: number
+  z: number
+  /** ignition time; flames grow over ~5s from here */
+  t0: number
+  /** size multiplier */
+  scale: number
+}
+
+/** buildings that catch fire after the breach, biased toward the outer gate */
+export const FIRE_SPOTS: FireSpot[] = Array.from({ length: 16 }, (_, k) => ({
+  x: range(rand, -280, 280),
+  z: OUTER.z - range(rand, 50, 430),
+  t0: T_OUTER_BREACH + 2 + k * 2.1 + range(rand, 0, 2),
+  scale: range(rand, 0.8, 1.7),
+}))
 
 // ---------------------------------------------------------------------------
 // preallocated frame (mutated in place every eval — renderer must not cache)
@@ -213,6 +257,7 @@ const frame: IncidentFrame = {
   innerGateAge: -1,
   colossal: null,
   colossalSteam: 0,
+  atmosphere: 0,
   armored: null,
   pures: pureStates,
   people: personStates,
@@ -254,14 +299,23 @@ function sampleYawBack(frames: Keyframe[], i: number): number {
 }
 
 const CAPTIONS: [number, number, string][] = [
-  [0.5, 7.5, 'Shiganshina District — Year 845'],
-  [8.4, 13, 'It appeared without warning. A Titan taller than the wall itself.'],
-  [14.5, 19.5, 'The outer gate is breached.'],
-  [20.5, 26, 'Titans pour into the city.'],
-  [33, 38, 'People run for the inner gate. Not all of them make it.'],
+  [0.5, 7.5, 'Shiganshina District — Year 845. For a hundred years, the walls have held.'],
+  [8.4, 13, 'It appeared without warning. Sixty meters — taller than the wall itself.'],
+  [14.5, 19.5, 'The gate is gone. A hundred years of peace, ended by a single kick.'],
+  [20.5, 26, 'Titans pour in. They do not eat because they are hungry.'],
+  [29.5, 34.5, 'Among the first taken: Carla Yeager, pulled from the rubble of her home. Her son is watching.'],
+  [35.2, 38, 'People run for the inner gate. Not all of them make it.'],
   [38.6, 43.5, 'Its work done, the Colossal Titan vanishes into steam.'],
+  [46, 53, 'The boats take the lucky ones. The rest wait at the gate as the screams come closer.'],
   [55.2, 61.5, 'Something is charging the inner gate —'],
   [64.4, 70.5, 'The Armored Titan. Wall Maria has fallen.'],
+]
+
+/** canon aftermath, per the Attack on Titan wiki — rendered on the end card */
+export const EP1_AFTERMATH = [
+  'A third of humanity’s territory is abandoned in a single day.',
+  'Year 846 — with the food running out, the Crown sends 250,000 refugees, one fifth of humanity, to “reclaim” Wall Maria.',
+  'Fewer than 200 return.',
 ]
 
 function decay(since: number, peak: number, halflife: number): number {
@@ -283,6 +337,11 @@ export function evalEp1(t: number, active: boolean): IncidentFrame {
     decay(t - T_OUTER_BREACH, 0.9, 0.9) +
     decay(t - T_INNER_BREACH, 1.2, 1.1) +
     (t >= T_ARMORED_SPAWN && t < T_INNER_BREACH ? 0.12 : 0)
+
+  // hell ramp: the world grades from pastoral to burning over ~12s post-breach
+  frame.atmosphere = active
+    ? Math.min(1, Math.max(0, (t - T_OUTER_BREACH) / 12)) + (t >= T_FLASH && t < T_OUTER_BREACH ? 0.15 : 0)
+    : 0
 
   // gates
   frame.outerGateBroken = t >= T_OUTER_BREACH
