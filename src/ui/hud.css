@@ -1,0 +1,507 @@
+/* ==========================================================================
+   PARADIS HUD — Survey-Corps field-report overlay
+   Parchment documents pinned over a 3D scene. No dashboard, no glass, no glow.
+   ========================================================================== */
+
+:root {
+  --paper: #efe6d2;
+  --paper-aged: #e4d8bd;
+  --ink: #2a2620;
+  --ink-soft: #4a443a;
+  --crimson: #8e2f24;
+  --brass: #8c7040;
+  --band: rgba(20, 17, 12, 0.72);
+  --serif: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+}
+
+/* ---- root: transparent to pointer events; children opt back in ---------- */
+.hud-root {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  color: var(--ink);
+  font-family: var(--serif);
+  user-select: none;
+}
+
+.hud-root button,
+.hud-root a,
+.hud-root input,
+.hud-panel,
+.hud-playback,
+.hud-endcard-inner {
+  pointer-events: auto;
+}
+
+/* ==========================================================================
+   Wordmark (top-left)
+   ========================================================================== */
+.hud-wordmark {
+  position: absolute;
+  top: 26px;
+  left: 30px;
+  max-width: 460px;
+}
+
+.hud-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 58px;
+  line-height: 0.92;
+  letter-spacing: 0.16em;
+  color: var(--ink);
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(239, 230, 210, 0.5);
+}
+
+.hud-subtitle {
+  margin: 8px 0 0;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.hud-tagline {
+  margin: 4px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+
+/* ==========================================================================
+   Paper panels (shared)
+   ========================================================================== */
+.hud-panel {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(140, 112, 64, 0.28), 0 6px 18px rgba(20, 17, 12, 0.35);
+}
+
+.hud-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--paper-aged);
+  border: none;
+  border-bottom: 1px solid var(--ink);
+  cursor: pointer;
+  font-family: var(--serif);
+  transition: background 110ms ease, color 110ms ease;
+}
+
+.hud-panel-header:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.hud-panel-label {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.hud-panel-toggle {
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   Episodes panel (bottom-left)
+   ========================================================================== */
+.hud-episodes {
+  position: absolute;
+  left: 30px;
+  bottom: 28px;
+  width: 320px;
+}
+
+.hud-ep-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hud-ep {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    'no name name'
+    'no meta soon';
+  column-gap: 8px;
+  row-gap: 1px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  background: var(--paper);
+  font-family: var(--serif);
+}
+
+.hud-ep-playable {
+  cursor: pointer;
+  transition: background 110ms ease, color 110ms ease;
+}
+
+.hud-ep-playable:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.hud-ep-active {
+  outline: 2px solid var(--crimson);
+  outline-offset: -1px;
+}
+
+.hud-ep-no {
+  grid-area: no;
+  align-self: start;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--crimson);
+  writing-mode: horizontal-tb;
+  padding-right: 8px;
+  border-right: 1px solid rgba(42, 38, 32, 0.35);
+}
+
+.hud-ep-playable:hover .hud-ep-no {
+  color: var(--paper);
+}
+
+.hud-ep-name {
+  grid-area: name;
+  font-size: 15px;
+  font-style: italic;
+}
+
+.hud-ep-meta {
+  grid-area: meta;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.hud-ep-playable:hover .hud-ep-meta {
+  color: var(--paper-aged);
+}
+
+.hud-ep-locked {
+  opacity: 0.42;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+
+.hud-ep-soon {
+  grid-area: soon;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  padding: 2px 5px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  align-self: center;
+}
+
+/* ==========================================================================
+   Playback bar (bottom-center) — dark band over the scene
+   ========================================================================== */
+.hud-playback {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--band);
+  border: 1px solid rgba(140, 112, 64, 0.5);
+  border-radius: 2px;
+  color: var(--paper);
+}
+
+.hud-scrub-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hud-time {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper-aged);
+  min-width: 92px;
+  text-align: center;
+}
+
+/* ---- flat parchment buttons ------------------------------------------- */
+.hud-btn {
+  font-family: var(--serif);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 110ms ease, color 110ms ease;
+}
+
+.hud-btn:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.hud-btn-icon {
+  width: 38px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.hud-btn-speed {
+  height: 32px;
+  padding: 0 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-btn-exit {
+  border-color: var(--crimson);
+  color: var(--crimson);
+}
+
+.hud-btn-exit:hover {
+  background: var(--crimson);
+  color: var(--paper);
+}
+
+/* ---- custom range slider ---------------------------------------------- */
+.hud-scrub {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 260px;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.hud-scrub::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--ink);
+  border: none;
+}
+
+.hud-scrub::-moz-range-track {
+  height: 2px;
+  background: var(--ink);
+  border: none;
+}
+
+.hud-scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -5px;
+  background: var(--brass);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+}
+
+.hud-scrub::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--brass);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+}
+
+/* ==========================================================================
+   Caption band (just above playback)
+   ========================================================================== */
+.hud-caption {
+  position: absolute;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  max-width: 760px;
+  padding: 10px 26px;
+  background: var(--band);
+  border-left: 2px solid var(--crimson);
+  border-right: 2px solid var(--crimson);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+
+.hud-caption-on {
+  opacity: 1;
+}
+
+.hud-caption-text {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 22px;
+  line-height: 1.3;
+  color: var(--paper);
+  letter-spacing: 0.01em;
+}
+
+/* ==========================================================================
+   Casualties counter (top-right)
+   ========================================================================== */
+.hud-casualties {
+  position: absolute;
+  top: 30px;
+  right: 32px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 13px;
+  background: var(--band);
+  border: 1px solid var(--crimson);
+  border-radius: 2px;
+}
+
+.hud-casualties-label {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #c78b83;
+}
+
+.hud-casualties-sep {
+  color: var(--crimson);
+  font-size: 13px;
+}
+
+.hud-casualties-count {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--crimson);
+  font-variant-numeric: tabular-nums;
+  animation: hud-tick 240ms ease-out;
+}
+
+@keyframes hud-tick {
+  0% {
+    transform: translateY(-3px) scale(1.22);
+    opacity: 0.4;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* ==========================================================================
+   End card (full-screen vignette)
+   ========================================================================== */
+.hud-endcard {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(12, 10, 7, 0.82) 0%,
+    rgba(8, 6, 4, 0.96) 100%
+  );
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 900ms ease;
+}
+
+.hud-endcard-on {
+  opacity: 1;
+  visibility: visible;
+}
+
+.hud-endcard-inner {
+  text-align: center;
+  max-width: 640px;
+  padding: 0 24px;
+}
+
+.hud-endcard-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 64px;
+  line-height: 1.02;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper);
+  text-shadow: 0 2px 12px rgba(142, 47, 36, 0.4);
+}
+
+.hud-endcard-body {
+  margin: 22px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--paper-aged);
+}
+
+.hud-endcard-toll {
+  margin: 18px 0 0;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--crimson);
+}
+
+.hud-endcard-actions {
+  margin-top: 34px;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.hud-btn-wide {
+  padding: 11px 26px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* ==========================================================================
+   Footnote (bottom-right)
+   ========================================================================== */
+.hud-footnote {
+  position: absolute;
+  right: 30px;
+  bottom: 24px;
+  max-width: 380px;
+  text-align: right;
+  opacity: 0.42;
+}
+
+.hud-footnote p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  color: var(--paper);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
