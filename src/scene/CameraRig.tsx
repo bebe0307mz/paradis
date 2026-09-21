@@ -5,11 +5,14 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import * as THREE from 'three'
 import { useParadis } from '../state/store'
 import { getFrame } from '../incidents/driver'
-import { SHI_INNER_GATE, SHI_OUTER_GATE } from '../world/constants'
+import { SHI_INNER_GATE, SHI_OUTER_GATE, TRO_INNER_GATE, TRO_OUTER_GATE } from '../world/constants'
+import { EP2_ERUPT } from '../incidents/ep2'
 
 const FLY_DUR = 2.4
 const GZ = SHI_INNER_GATE[2] // 12000 — inner gate through Wall Maria
 const OZ = SHI_OUTER_GATE[2] // 12550 — outer district gate
+const GZ2 = TRO_INNER_GATE[2] // 9500 — inner gate through Wall Rose
+const OZ2 = TRO_OUTER_GATE[2] // 10050 — Trost outer district gate
 
 function smootherstep(x: number): number {
   const t = Math.min(1, Math.max(0, x))
@@ -32,7 +35,7 @@ function lerp3(out: THREE.Vector3, ax: number, ay: number, az: number, bx: numbe
   out.set(ax + (bx - ax) * f, ay + (by - ay) * f, az + (bz - az) * f)
 }
 
-const SHOTS: Shot[] = [
+const SHOTS_EP1: Shot[] = [
   // 1 — slow drift over the rooftops, the gate in the distance. Calm before.
   {
     t0: 0,
@@ -134,15 +137,125 @@ const SHOTS: Shot[] = [
   },
 ]
 
-function evalDirector(t: number, pos: THREE.Vector3, tgt: THREE.Vector3) {
-  for (const s of SHOTS) {
+// ---------------------------------------------------------------------------
+// Episode 2 — The Battle of Trost
+// ---------------------------------------------------------------------------
+const SHOTS_EP2: Shot[] = [
+  // 1 — calm drift over Trost, the gate ahead
+  {
+    t0: 0,
+    t1: 8,
+    eval: (f, pos, tgt) => {
+      lerp3(pos, 320, 170, GZ2 + 140, 130, 70, GZ2 + 300, f)
+      tgt.set(0, 45, OZ2)
+    },
+  },
+  // 2 — street-level reveal: the Colossal is BACK (≥185m or the wall hides the head)
+  {
+    t0: 8,
+    t1: 16.5,
+    eval: (f, pos, tgt) => {
+      lerp3(pos, 9, 5, OZ2 - 210, 5, 6, OZ2 - 188, f)
+      lerp3(tgt, 0, 34, OZ2, 0, 54, OZ2 + 16, f)
+    },
+  },
+  // 3 — the Garrison answers: soldiers zipping past, titans in the breach
+  {
+    t0: 16.5,
+    t1: 25,
+    eval: (f, pos, tgt) => {
+      lerp3(pos, -150, 36, OZ2 - 310, -95, 24, OZ2 - 270, f)
+      tgt.set(0, 18, OZ2 - 20)
+    },
+  },
+  // 4 — squad wipe: track the bearded titan that takes Eren
+  {
+    t0: 25,
+    t1: 37,
+    eval: (_f, pos, tgt) => {
+      const p = getFrame().pures[1]
+      const h = p?.height ?? 12
+      if (p?.visible) {
+        tgt.set(p.pos[0], h * 0.55, p.pos[2])
+        pos.set(p.pos[0] + 20, 17, p.pos[2] + 30)
+      } else {
+        tgt.set(0, 8, OZ2 - 260)
+        pos.set(34, 24, OZ2 - 200)
+      }
+    },
+  },
+  // 5 — the eruption, up close and low
+  {
+    t0: 37,
+    t1: 41.5,
+    eval: (_f, pos, tgt) => {
+      tgt.set(EP2_ERUPT.x, 9, EP2_ERUPT.z)
+      pos.set(EP2_ERUPT.x + 26, 9, EP2_ERUPT.z + 34)
+    },
+  },
+  // 6 — the fistfight: drone-tracking the Rogue Titan
+  {
+    t0: 41.5,
+    t1: 62,
+    eval: (_f, pos, tgt) => {
+      const r = getFrame().rogue
+      if (r?.visible) {
+        tgt.set(r.pos[0], 9, r.pos[2])
+        pos.set(r.pos[0] + 24, 19, r.pos[2] + 34)
+      } else {
+        tgt.set(EP2_ERUPT.x, 9, EP2_ERUPT.z)
+        pos.set(EP2_ERUPT.x + 24, 19, EP2_ERUPT.z + 34)
+      }
+    },
+  },
+  // 7 — the carry: backing down the street ahead of the boulder
+  {
+    t0: 62,
+    t1: 77,
+    eval: (_f, pos, tgt) => {
+      const r = getFrame().rogue
+      if (r?.visible) {
+        tgt.set(r.pos[0], 13, r.pos[2])
+        pos.set(r.pos[0] + 30, 18, Math.min(r.pos[2] + 78, OZ2 - 35))
+      } else {
+        tgt.set(-150, 12, GZ2 + 230)
+        pos.set(-120, 16, GZ2 + 290)
+      }
+    },
+  },
+  // 8 — the slam, wide from the side
+  {
+    t0: 77,
+    t1: 84,
+    eval: (f, pos, tgt) => {
+      lerp3(pos, 175, 62, OZ2 - 170, 150, 52, OZ2 - 130, f)
+      tgt.set(0, 26, OZ2)
+    },
+  },
+  // 9 — victory pull-back over the held district
+  {
+    t0: 84,
+    t1: 1e9,
+    eval: (f, pos, tgt) => {
+      const k = smootherstep(Math.min(1, f))
+      lerp3(pos, 150, 90, GZ2 + 200, 950, 720, GZ2 - 1400, k)
+      lerp3(tgt, 0, 30, OZ2 - 150, 0, 60, OZ2 - 100, k)
+    },
+  },
+]
+
+const SHOTS_BY_ID: Record<string, Shot[]> = { ep1: SHOTS_EP1, ep2: SHOTS_EP2 }
+
+function evalDirector(incident: string, t: number, pos: THREE.Vector3, tgt: THREE.Vector3) {
+  const shots = SHOTS_BY_ID[incident] ?? SHOTS_EP1
+  for (const s of shots) {
     if (t >= s.t0 && t < s.t1) {
       const span = Math.min(s.t1 - s.t0, 12)
       s.eval(smootherstep((t - s.t0) / span), pos, tgt)
       return
     }
   }
-  SHOTS[SHOTS.length - 1].eval(1, pos, tgt)
+  shots[shots.length - 1].eval(1, pos, tgt)
 }
 
 export function CameraRig() {
@@ -194,7 +307,7 @@ export function CameraRig() {
     // director cam owns the camera while an incident plays in cinematic mode
     if (s.cinematic && s.incident && controls.current) {
       fly.current = null
-      evalDirector(getFrame().t, V, controls.current.target)
+      evalDirector(s.incident, getFrame().t, V, controls.current.target)
       // V holds pos; blend gently so scrub jumps don't teleport-snap
       camera.position.lerp(V, 0.22)
       return

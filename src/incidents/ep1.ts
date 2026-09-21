@@ -209,6 +209,10 @@ const pureStates: TitanState[] = PURE_TITANS.map((pt) => ({
   walkSpeed: 0,
   eating: 0,
   crouch: 0,
+  down: 0,
+  steam: 0,
+  attack: 0,
+  carry: 0,
   visible: false,
 }))
 
@@ -221,6 +225,10 @@ const colossalState: TitanState = {
   walkSpeed: 0,
   eating: 0,
   crouch: 0,
+  down: 0,
+  steam: 0,
+  attack: 0,
+  carry: 0,
   visible: false,
 }
 
@@ -233,6 +241,10 @@ const armoredState: TitanState = {
   walkSpeed: 0,
   eating: 0,
   crouch: 0,
+  down: 0,
+  steam: 0,
+  attack: 0,
+  carry: 0,
   running: true,
   visible: false,
 }
@@ -247,6 +259,7 @@ const ARMORED_PATH: Keyframe[] = [
 
 const frame: IncidentFrame = {
   active: false,
+  id: null,
   t: 0,
   duration: EP1_DURATION,
   flash: 0,
@@ -259,11 +272,17 @@ const frame: IncidentFrame = {
   colossalSteam: 0,
   atmosphere: 0,
   armored: null,
+  rogue: null,
   pures: pureStates,
   people: personStates,
+  soldiers: [],
+  boulder: null,
   deaths: 0,
+  soldiersLost: 0,
+  titansSlain: 0,
   caption: null,
   endCard: false,
+  victory: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +347,7 @@ function decay(since: number, peak: number, halflife: number): number {
 // ---------------------------------------------------------------------------
 export function evalEp1(t: number, active: boolean): IncidentFrame {
   frame.active = active
+  frame.id = active ? 'ep1' : null
   frame.t = t
   frame.endCard = active && t >= T_ENDCARD
 

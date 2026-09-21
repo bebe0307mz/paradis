@@ -16,7 +16,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getFrame } from '../incidents/driver.ts'
 import { mulberry32 } from '../world/rng.ts'
-import { KILL_EVENTS } from '../incidents/ep1.ts'
+import type { KillEvent } from '../incidents/ep1.ts'
 
 // ---------------------------------------------------------------------------
 // tuning
@@ -88,7 +88,8 @@ const MIST_TONES = [0x7a1010, 0x8c1616, 0x981a1a, 0xa51f1f, 0x901414]
 const SPLAT_TONES = [0x7c0b0b, 0x8c1010, 0x961313, 0xa11616]
 const LUMP_TONES = [0x4a0808, 0x5a0c0a, 0x3e0606]
 
-const KILLS: KillGore[] = KILL_EVENTS.map((ev, i) => {
+function buildKills(events: KillEvent[]): KillGore[] {
+  return events.map((ev, i) => {
   const rand = mulberry32(1000 + i)
   const mist: MistP[] = []
   for (let k = 0; k < MIST_PER_KILL; k++) {
@@ -144,15 +145,16 @@ const KILLS: KillGore[] = KILL_EVENTS.map((ev, i) => {
       color: new THREE.Color(LUMP_TONES[Math.floor(rand() * LUMP_TONES.length)]),
     })
   }
-  return { t: ev.t, x: ev.x, z: ev.z, mouthY: ev.mouthY, mist, blobs, lumps }
-})
-
-const MIST_COUNT = KILLS.length * MIST_PER_KILL
-const SPLAT_COUNT = KILLS.length * (SPLAT_BLOBS + SPLAT_STREAKS)
-const LUMP_COUNT = KILLS.length * REMAINS_PER_KILL
+    return { t: ev.t, x: ev.x, z: ev.z, mouthY: ev.mouthY, mist, blobs, lumps }
+  })
+}
 
 // ---------------------------------------------------------------------------
-export function Gore() {
+export function Gore({ events, forId }: { events: KillEvent[]; forId: string }) {
+  const KILLS = useMemo(() => buildKills(events), [events])
+  const MIST_COUNT = KILLS.length * MIST_PER_KILL
+  const SPLAT_COUNT = KILLS.length * (SPLAT_BLOBS + SPLAT_STREAKS)
+  const LUMP_COUNT = KILLS.length * REMAINS_PER_KILL
   const mistRef = useRef<THREE.InstancedMesh>(null)
   const splatRef = useRef<THREE.InstancedMesh>(null)
   const lumpRef = useRef<THREE.InstancedMesh>(null)
@@ -192,7 +194,7 @@ export function Gore() {
     const lump = lumpRef.current
     if (!mist || !splat || !lump) return
 
-    const active = frame.active
+    const active = frame.id === forId
     const t = frame.t
 
     // ---- red mist burst ------------------------------------------------

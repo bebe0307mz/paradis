@@ -1,14 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParadis } from '../state/store'
-import { EP1_DURATION, EP1_META, EP1_AFTERMATH } from '../incidents/ep1'
+import { EP1_META, EP1_AFTERMATH } from '../incidents/ep1'
+import { EP2_META, EP2_AFTERMATH } from '../incidents/ep2'
+import { incidentDuration } from '../incidents/driver'
 import './hud.css'
 
 // ---------------------------------------------------------------------------
-// share intent — Wall Maria fall, no long dashes in the copy
+// share intents — no long dashes in the copy
 // ---------------------------------------------------------------------------
 const SHARE_TEXT =
   'I just watched Wall Maria fall. Real scale, a 60 m Colossal Titan against a 50 m wall, 850 people in the streets. In the browser.\n\nhttps://paradis-sepia.vercel.app'
 const SHARE_URL = `https://twitter.com/intent/tweet?text=${encodeURIComponent(SHARE_TEXT)}`
+
+const VICTORY_SHARE_TEXT =
+  'Humanity just won for the first time in 100 years. I watched the Rogue Titan seal the Trost breach with a boulder, live in the browser.\n\nhttps://paradis-sepia.vercel.app'
+const VICTORY_SHARE_URL = `https://twitter.com/intent/tweet?text=${encodeURIComponent(VICTORY_SHARE_TEXT)}`
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -21,7 +27,6 @@ function fmtTime(sec: number): string {
 }
 
 const LOCKED = [
-  'Episode 2 — The Battle of Trost',
   'Episode 3 — The Female Titan · Stohess',
   'Episode 4 — Return to Shiganshina',
 ]
@@ -51,6 +56,10 @@ function EpisodesPanel() {
   const playEp1 = () => {
     startIncident('ep1')
     requestFly({ target: [0, 45, 12480], position: [390, 230, 13230] })
+  }
+  const playEp2 = () => {
+    startIncident('ep2')
+    requestFly({ target: [0, 45, 9980], position: [390, 230, 10730] })
   }
 
   return (
@@ -87,6 +96,16 @@ function EpisodesPanel() {
               <span className="hud-ep-meta">Year {EP1_META.year} · playable</span>
             </button>
           </li>
+          <li>
+            <button
+              className={`hud-ep hud-ep-playable${incident === 'ep2' ? ' hud-ep-active' : ''}`}
+              onClick={playEp2}
+            >
+              <span className="hud-ep-no">Episode 2</span>
+              <span className="hud-ep-name">{EP2_META.title}</span>
+              <span className="hud-ep-meta">Year {EP2_META.year} · playable</span>
+            </button>
+          </li>
           {LOCKED.map((label) => {
             const [no, name] = label.split(' — ')
             return (
@@ -110,19 +129,21 @@ function EpisodesPanel() {
 // ---------------------------------------------------------------------------
 function Scrubber() {
   const t = useParadis((s) => s.t)
+  const incident = useParadis((s) => s.incident)
   const seek = useParadis((s) => s.seek)
+  const duration = incidentDuration(incident ?? 'ep1')
   return (
     <div className="hud-scrub-row">
       <span className="hud-time">
-        {fmtTime(t)} / {fmtTime(EP1_DURATION)}
+        {fmtTime(t)} / {fmtTime(duration)}
       </span>
       <input
         className="hud-scrub"
         type="range"
         min={0}
-        max={EP1_DURATION}
+        max={duration}
         step={0.1}
-        value={Math.min(t, EP1_DURATION)}
+        value={Math.min(t, duration)}
         onInput={(e) => seek(+(e.target as HTMLInputElement).value)}
       />
     </div>
@@ -210,28 +231,62 @@ function Letterbox() {
 }
 
 // ---------------------------------------------------------------------------
-// casualties counter (top-right) — only when active and deaths > 0
+// casualties counter (top-right) — ep1: confirmed eaten; ep2: battle tally
 // ---------------------------------------------------------------------------
-function Casualties() {
-  const incident = useParadis((s) => s.incident)
-  const deaths = useParadis((s) => s.deaths)
-  const prev = useRef(deaths)
+function usePulse(value: number): boolean {
+  const prev = useRef(value)
   const [pulse, setPulse] = useState(false)
-
   useEffect(() => {
-    if (deaths !== prev.current) {
-      prev.current = deaths
+    if (value !== prev.current) {
+      prev.current = value
       setPulse(true)
       const id = setTimeout(() => setPulse(false), 260)
       return () => clearTimeout(id)
     }
-  }, [deaths])
+  }, [value])
+  return pulse
+}
 
-  if (incident === null || deaths <= 0) return null
+function Casualties() {
+  const incident = useParadis((s) => s.incident)
+  const deaths = useParadis((s) => s.deaths)
+  const soldiersLost = useParadis((s) => s.soldiersLost)
+  const titansSlain = useParadis((s) => s.titansSlain)
+  const deathsPulse = usePulse(deaths)
+  const lostPulse = usePulse(soldiersLost)
+  const slainPulse = usePulse(titansSlain)
+
+  if (incident === null) return null
+
+  if (incident === 'ep2') {
+    if (soldiersLost <= 0 && titansSlain <= 0) return null
+    return (
+      <div className="hud-casualties hud-tally">
+        <div className="hud-tally-row">
+          <span className="hud-tally-label">Soldiers Lost</span>
+          <span
+            className={`hud-tally-count hud-tally-lost${lostPulse ? ' hud-casualties-pulse' : ''}`}
+          >
+            {soldiersLost}
+          </span>
+        </div>
+        <div className="hud-tally-row">
+          <span className="hud-tally-label">Titans Slain</span>
+          <span
+            className={`hud-tally-count hud-tally-slain${slainPulse ? ' hud-tally-pulse-slain' : ''}`}
+          >
+            {titansSlain}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  if (deaths <= 0) return null
   return (
     <div className="hud-casualties">
       <span className="hud-casualties-label">Confirmed Eaten</span>
-      <span className={`hud-casualties-count${pulse ? ' hud-casualties-pulse' : ''}`}>
+      <span className={`hud-casualties-count${deathsPulse ? ' hud-casualties-pulse' : ''}`}>
         {deaths}
       </span>
     </div>
@@ -239,21 +294,66 @@ function Casualties() {
 }
 
 // ---------------------------------------------------------------------------
-// end card — memorial / aftermath, appears when endCard is true
+// end card — mourning (ep1) or victory (ep2), appears when endCard is true
 // ---------------------------------------------------------------------------
 function EndCard() {
   const endCard = useParadis((s) => s.endCard)
+  const incident = useParadis((s) => s.incident)
   const deaths = useParadis((s) => s.deaths)
+  const victory = useParadis((s) => s.victory)
   const seek = useParadis((s) => s.seek)
   const setPlaying = useParadis((s) => s.setPlaying)
+
+  const isVictory = incident === 'ep2' || victory
 
   const replay = () => {
     seek(0)
     setPlaying(true)
   }
-  const explore = () => {
+  const exploreEp1 = () => {
     setPlaying(false)
     seek(71.9)
+  }
+  const exploreEp2 = () => {
+    setPlaying(false)
+    seek(99)
+  }
+
+  if (isVictory) {
+    return (
+      <div
+        className={`hud-endcard hud-endcard-victory${endCard ? ' hud-endcard-on' : ''}`}
+        aria-hidden={!endCard}
+      >
+        <div className="hud-endcard-inner">
+          <p className="hud-endcard-kicker">Year 850 · Battle of Trost</p>
+          <h2 className="hud-endcard-title hud-endcard-title-victory">THE FIRST VICTORY</h2>
+          <ul className="hud-endcard-stats hud-endcard-stats-victory">
+            {EP2_AFTERMATH.map((line) => (
+              <li key={line} className="hud-endcard-stat hud-endcard-stat-victory">
+                {line}
+              </li>
+            ))}
+          </ul>
+          <div className="hud-endcard-actions">
+            <button className="hud-btn hud-btn-wide" onClick={replay}>
+              REPLAY
+            </button>
+            <button className="hud-btn hud-btn-wide" onClick={exploreEp2}>
+              EXPLORE
+            </button>
+            <a
+              className="hud-btn hud-btn-wide hud-btn-share hud-btn-share-victory"
+              href={VICTORY_SHARE_URL}
+              target="_blank"
+              rel="noopener"
+            >
+              POST ON 𝕏
+            </a>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -275,7 +375,7 @@ function EndCard() {
           <button className="hud-btn hud-btn-wide" onClick={replay}>
             REPLAY
           </button>
-          <button className="hud-btn hud-btn-wide" onClick={explore}>
+          <button className="hud-btn hud-btn-wide" onClick={exploreEp1}>
             EXPLORE THE RUINS
           </button>
           <a

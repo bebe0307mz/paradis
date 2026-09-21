@@ -10,8 +10,11 @@ import { People } from './scene/People'
 import { Titans } from './scene/Titans'
 import { Gore } from './scene/Gore'
 import { Fires } from './scene/Fires'
+import { Soldiers } from './scene/Soldiers'
+import { Boulder } from './scene/Boulder'
 import { IncidentDriver, getFrame } from './incidents/driver'
-import { KILL_EVENTS } from './incidents/ep1'
+import { KILL_EVENTS, FIRE_SPOTS } from './incidents/ep1'
+import { EP2_KILL_EVENTS, EP2_FIRE_SPOTS } from './incidents/ep2'
 import { HUD } from './ui/HUD'
 
 /** camera shake applied to the whole world group — avoids fighting OrbitControls */
@@ -135,7 +138,8 @@ function BloodVignette() {
         const f = getFrame()
         let pulse = 0
         if (f.active) {
-          for (const k of KILL_EVENTS) {
+          const events = f.id === 'ep2' ? EP2_KILL_EVENTS : KILL_EVENTS
+          for (const k of events) {
             const since = f.t - k.t
             if (since >= 0 && since < 2.4) pulse += Math.exp(-since / 0.7) * 0.35
           }
@@ -183,8 +187,12 @@ export default function App() {
           <Town />
           <People />
           <Titans />
-          <Gore />
-          <Fires />
+          <Soldiers />
+          <Boulder />
+          <Gore events={KILL_EVENTS} forId="ep1" />
+          <Gore events={EP2_KILL_EVENTS} forId="ep2" />
+          <Fires spots={FIRE_SPOTS} forId="ep1" />
+          <Fires spots={EP2_FIRE_SPOTS} forId="ep2" />
         </ShakeWorld>
       </Canvas>
       <HUD />

@@ -72,3 +72,8 @@ export const SHIGANSHINA = DISTRICTS[0]
 // Shiganshina landmark points (world space, district is at south: +Z)
 export const SHI_INNER_GATE: [number, number, number] = [0, 0, MARIA_R] // through Wall Maria
 export const SHI_OUTER_GATE: [number, number, number] = [0, 0, MARIA_R + DISTRICT_R] // through district wall
+
+export const TROST = DISTRICTS[4]
+// Trost landmark points (Wall Rose south, same south-facing layout)
+export const TRO_INNER_GATE: [number, number, number] = [0, 0, ROSE_R] // through Wall Rose
+export const TRO_OUTER_GATE: [number, number, number] = [0, 0, ROSE_R + DISTRICT_R] // through district wall

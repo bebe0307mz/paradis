@@ -536,11 +536,13 @@ function BreakableGate({
   yaw,
   gate,
   seed,
+  episode,
 }: {
   center: [number, number, number]
   yaw: number
   gate: 'outer' | 'inner'
   seed: number
+  episode: 'ep1' | 'ep2'
 }) {
   const chunks = useMemo(() => buildChunks(seed), [seed])
   const rubble = useMemo(() => buildRubble(seed), [seed])
@@ -549,6 +551,13 @@ function BreakableGate({
   const ageRef = useRef({ age: -1 }).current
   useFrame(() => {
     const frame = getFrame()
+    // only react to the episode this gate belongs to; otherwise it stays a
+    // fully intact closed-door gatehouse (age -1 hides all debris/rubble/dust).
+    if (frame.id !== episode) {
+      ageRef.age = -1
+      if (doorsRef.current) doorsRef.current.visible = true
+      return
+    }
     ageRef.age = gate === 'outer' ? frame.outerGateAge : frame.innerGateAge
     const broken = gate === 'outer' ? frame.outerGateBroken : frame.innerGateBroken
     // doors vanish on breach; masonry (towers + arch) always stands
@@ -629,8 +638,15 @@ export function Walls() {
       {gates.map(({ dd, inner, outer }) =>
         dd.id === 'shiganshina' ? (
           <group key={dd.id}>
-            <BreakableGate center={inner} yaw={dd.angle} gate="inner" seed={4451} />
-            <BreakableGate center={outer} yaw={dd.angle} gate="outer" seed={8817} />
+            <BreakableGate center={inner} yaw={dd.angle} gate="inner" seed={4451} episode="ep1" />
+            <BreakableGate center={outer} yaw={dd.angle} gate="outer" seed={8817} episode="ep1" />
+          </group>
+        ) : dd.id === 'trost' ? (
+          <group key={dd.id}>
+            {/* inner gate through Wall Rose never breaks this episode */}
+            <GateArch center={inner} yaw={dd.angle} />
+            {/* outer district gate is breached by the colossal in ep2 */}
+            <BreakableGate center={outer} yaw={dd.angle} gate="outer" seed={2850} episode="ep2" />
           </group>
         ) : (
           <group key={dd.id}>

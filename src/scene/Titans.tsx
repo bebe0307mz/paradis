@@ -60,6 +60,7 @@ function makeLimb(material: THREE.Material, w: number, len: number, d: number): 
 // read alike, and none of it changes at render time.
 type PureRig = {
   root: THREE.Group
+  fall: THREE.Group // hinge at the feet — rotates the whole body over as it dies
   body: THREE.Group // everything above the feet — receives the bob/roll
   head: THREE.Group
   jaw: THREE.Group // lower face — opens/snaps during the eating cycle
@@ -70,6 +71,10 @@ type PureRig = {
   handStain: THREE.Mesh // crimson stain flash on the raised hand
   shadow: THREE.Mesh
   skinMat: THREE.MeshStandardMaterial
+  bodyMats: THREE.MeshStandardMaterial[] // faded out during the death dissolve
+  steam: THREE.Points // rising death steam
+  steamData: Float32Array // base positions + per-particle random
+  fallDir: number // ±1 — topples toward or away from facing (seeded)
   height: number
   phase: number // random start so the pures don't march in lockstep
   // seeded disproportion + face character (baked once)
@@ -100,17 +105,24 @@ function buildPure(index: number): PureRig {
   if (smiling) skin.lerp(new THREE.Color(0xc7b3ab), 0.5)
   const skinMat = mat(skin)
 
-  // face materials — shared, static colours (no vertexColors: geometry has none)
-  const socketMat = mat(0x120a08, { roughness: 1 }) // sunken dark sockets
-  const pupilMat = new THREE.MeshBasicMaterial({ color: 0xfff2d8 }) // tiny bright pupils
-  const browMat = mat(new THREE.Color(skin).multiplyScalar(0.72), { roughness: 1 })
-  const mawMat = mat(0x0a0503, { roughness: 1 }) // dark mouth slab
-  const toothMat = mat(0xdcd2bf, { roughness: 0.6 }) // blocky teeth
-  const hairMat = mat(0x2e2416, { roughness: 1 }) // dark-blonde hair slab (smiling titan)
+  // face materials — shared, static colours (no vertexColors: geometry has none).
+  // Every body material is made transparent so the death dissolve can fade the
+  // whole titan out as its steam rises. skinMat is already transparent-capable
+  // via the shared mat() default of transparent:false → flip it on here.
+  skinMat.transparent = true
+  const socketMat = mat(0x120a08, { roughness: 1, transparent: true }) // sunken dark sockets
+  const pupilMat = new THREE.MeshBasicMaterial({ color: 0xfff2d8, transparent: true }) // tiny bright pupils
+  const browMat = mat(new THREE.Color(skin).multiplyScalar(0.72), { roughness: 1, transparent: true })
+  const mawMat = mat(0x0a0503, { roughness: 1, transparent: true }) // dark mouth slab
+  const toothMat = mat(0xdcd2bf, { roughness: 0.6, transparent: true }) // blocky teeth
+  const hairMat = mat(0x2e2416, { roughness: 1, transparent: true }) // dark-blonde hair slab (smiling titan)
+  const bodyMats = [skinMat, socketMat, browMat, mawMat, toothMat, hairMat]
 
   const root = new THREE.Group()
+  const fall = new THREE.Group() // toppling hinge — sits at the feet
+  root.add(fall)
   const body = new THREE.Group()
-  root.add(body)
+  fall.add(body)
 
   // Torso: potbelly — a squashed box, wider at the belly.
   const torso = new THREE.Mesh(BOX, skinMat)
@@ -180,6 +192,28 @@ function buildPure(index: number): PureRig {
   shadow.rotation.x = -Math.PI / 2
   root.add(shadow)
 
+  // Death steam: a modest cloud of billboard puffs rising off the corpse as it
+  // dissolves. Positions get re-shaped for the actual height in shapePure; here
+  // we just allocate the buffers deterministically. Invisible until steam>0.
+  const SN = 28
+  const steamPositions = new Float32Array(SN * 3)
+  const steamData = new Float32Array(SN * 4) // x,y,z base + loop-phase
+  const sseed = mulberry32((index + 1) * 40503 + 7)
+  for (let i = 0; i < SN; i++) {
+    steamData[i * 4 + 0] = sseed()
+    steamData[i * 4 + 1] = sseed()
+    steamData[i * 4 + 2] = sseed()
+    steamData[i * 4 + 3] = sseed() // vertical loop phase 0..1
+  }
+  const steamGeo = new THREE.BufferGeometry()
+  steamGeo.setAttribute('position', new THREE.BufferAttribute(steamPositions, 3))
+  const steam = new THREE.Points(steamGeo, new THREE.PointsMaterial({
+    color: 0xf2ece2, size: 1, transparent: true, opacity: 0,
+    depthWrite: false, sizeAttenuation: true, map: PUFF_TEX,
+  }))
+  steam.visible = false
+  root.add(steam)
+
   // Seeded disproportion. Smiling titan is extra-gaunt with a hungrier reach.
   const headMul = 1.1 + rand() * 0.4 // 1.1–1.5
   const armMul = 0.95 + rand() * 0.45 // up to ~1.4 — hangs past the knees
@@ -187,9 +221,11 @@ function buildPure(index: number): PureRig {
   const grinWidth = smiling ? 0.94 : 0.68 + rand() * 0.18
 
   return {
-    root, body, head, jaw, torso,
+    root, fall, body, head, jaw, torso,
     arms: [armL, armR], legs: [legL, legR],
     flash, handStain, shadow, skinMat,
+    bodyMats, steam, steamData,
+    fallDir: rand() < 0.5 ? -1 : 1,
     height: 8,
     phase: rand() * Math.PI * 2,
     headMul, armMul, bodyGaunt, grinWidth, smiling,
@@ -305,6 +341,22 @@ function shapePure(rig: PureRig, h: number) {
 
   rig.shadow.scale.setScalar(h * 0.22)
   rig.shadow.position.y = 0.15
+
+  // Shape the death-steam cloud to the body: puffs seeded across a low, wide
+  // volume (the corpse lies flat), sized to the titan. Base Y stays near the
+  // ground since a downed titan is horizontal.
+  const data = rig.steamData
+  const SN = data.length / 4
+  const pos = rig.steam.geometry.getAttribute('position') as THREE.BufferAttribute
+  for (let i = 0; i < SN; i++) {
+    const bx = (data[i * 4 + 0] - 0.5) * h * 0.6
+    const by = data[i * 4 + 1] * h * 0.28
+    const bz = (data[i * 4 + 2] - 0.5) * h * 0.9
+    pos.setXYZ(i, bx, by, bz)
+  }
+  pos.needsUpdate = true
+  const sm = rig.steam.material as THREE.PointsMaterial
+  sm.size = h * 0.22
 }
 
 function updatePure(rig: PureRig, st: TitanState, t: number) {
@@ -321,6 +373,73 @@ function updatePure(rig: PureRig, st: TitanState, t: number) {
   const eat = st.eating
   const fm = rig.flash.material as THREE.MeshBasicMaterial
   const hsm = rig.handStain.material as THREE.MeshBasicMaterial
+
+  // -------------------------------------------------------------------------
+  // DEATH — nape-cut or punched down. `down` topples the rig around its feet
+  // (ease-out) until it lies flat with a slight ground sink; `steam` then
+  // dissolves the body while puffs rise. A dead titan does not walk or eat.
+  // -------------------------------------------------------------------------
+  if (st.down > 0 || st.steam > 0) {
+    fm.opacity = 0
+    hsm.opacity = 0
+    rig.jaw.rotation.x = 0
+    rig.head.rotation.z = 0
+
+    // freeze the limbs into a slack collapse and kill any residual bob/roll
+    rig.body.position.y = 0
+    rig.body.rotation.z = 0
+    rig.head.rotation.x = 0.1
+    rig.arms[0].pivot.rotation.set(0.2, 0, 0.22)
+    rig.arms[1].pivot.rotation.set(0.2, 0, -0.22)
+    rig.legs[0].pivot.rotation.x = 0
+    rig.legs[1].pivot.rotation.x = 0
+
+    // topple: ease-out rotation about the feet toward fallDir, ending flat.
+    const d = st.down
+    const eased = 1 - (1 - d) * (1 - d)
+    rig.fall.rotation.x = rig.fallDir * eased * (Math.PI / 2)
+    rig.fall.position.y = -eased * h * 0.04 // slight sink into the ground
+
+    // dissolve the body materials as steam rises; hide once fully gone.
+    const dissolve = st.steam
+    const bodyOpacity = 1 - dissolve
+    for (const m of rig.bodyMats) m.opacity = bodyOpacity
+    ;(rig.flash.material as THREE.MeshBasicMaterial).opacity = 0
+    rig.body.visible = bodyOpacity > 0.02
+    rig.shadow.visible = bodyOpacity > 0.02
+
+    // steam puffs rise and fade over the corpse.
+    if (dissolve > 0) {
+      rig.steam.visible = true
+      const sd = rig.steamData
+      const SN = sd.length / 4
+      const spos = rig.steam.geometry.getAttribute('position') as THREE.BufferAttribute
+      const rise = h * 0.7
+      for (let i = 0; i < SN; i++) {
+        const bx = (sd[i * 4 + 0] - 0.5) * h * 0.6
+        const by = sd[i * 4 + 1] * h * 0.28
+        const bz = (sd[i * 4 + 2] - 0.5) * h * 0.9
+        const loop = (sd[i * 4 + 3] + dissolve * 1.2) % 1
+        spos.setXYZ(i, bx, by + loop * rise, bz)
+      }
+      spos.needsUpdate = true
+      const sm = rig.steam.material as THREE.PointsMaterial
+      sm.opacity = Math.sin(Math.min(1, dissolve) * Math.PI) * 0.7
+    } else {
+      rig.steam.visible = false
+    }
+    return
+  }
+
+  // alive: ensure the toppling hinge and dissolve are reset
+  if (rig.fall.rotation.x !== 0) {
+    rig.fall.rotation.x = 0
+    rig.fall.position.y = 0
+    for (const m of rig.bodyMats) m.opacity = 1
+    rig.body.visible = true
+    rig.shadow.visible = true
+    rig.steam.visible = false
+  }
 
   if (eat > 0) {
     // Feeding, staged as a brutal read:
@@ -755,6 +874,338 @@ function updateArmored(rig: ArmoredRig, st: TitanState | null, t: number) {
 }
 
 // ===========================================================================
+// ROGUE TITAN (15m) — Eren's titan. Lean muscular skin-toned body with
+// exposed-sinew accents, long shaggy dark hair, pointed ears, a lipless
+// permanently-bared jagged grin, hard cheekbones, glowing green eyes. It
+// sprints, roars, throws crossing punches, then carries the boulder overhead.
+// ===========================================================================
+type RogueRig = {
+  root: THREE.Group
+  body: THREE.Group
+  torso: THREE.Group // upper-body pivot at the waist — roar lean / carry / punch twist
+  head: THREE.Group
+  jaw: THREE.Group
+  arms: [Limb, Limb]
+  legs: [Limb, Limb]
+  steam: THREE.Points
+  steamData: Float32Array
+  shadow: THREE.Mesh
+  h: number
+}
+
+function buildRogue(): RogueRig {
+  const h = 15
+  const root = new THREE.Group()
+  const body = new THREE.Group()
+  root.add(body)
+
+  // Palette: warm skin over exposed dark-red sinew accents, bared bone teeth,
+  // dark-brown hair, and hot-green glowing eyes.
+  const skin = mat(0xb07a5e, { roughness: 0.8 }) // Eren-titan tan skin
+  const sinew = mat(0x7a2b22, { roughness: 0.75, emissive: new THREE.Color(0x2a0a06), emissiveIntensity: 0.3 }) // exposed muscle at cheeks/forearms
+  const bone = mat(0xe6dcc6, { roughness: 0.55 }) // bared teeth
+  const maw = mat(0x1a0d09, { roughness: 1 }) // dark mouth line behind the teeth
+  const hairMat = mat(0x2a2018, { roughness: 1 }) // shaggy dark-brown hair
+  const eyeGlow = mat(0x2f7a1f, { emissive: new THREE.Color(0x5cff4a), emissiveIntensity: 1.9 }) // glowing green eyes
+
+  const torsoH = h * 0.4
+  const legLen = h * 0.46
+  const legTop = legLen
+
+  // Upper-body pivot at the waist so roar-lean, carry, and punch-twist all
+  // rotate the torso+arms+head as one unit about the hips.
+  const torso = new THREE.Group()
+  torso.position.y = legTop
+  body.add(torso)
+
+  // Lean muscular trunk — a touch narrower than the pures, athletic V.
+  const trunk = new THREE.Mesh(BOX, skin)
+  trunk.scale.set(h * 0.26, torsoH, h * 0.17)
+  trunk.position.y = torsoH / 2
+  torso.add(trunk)
+  // broad shoulder girdle
+  const shoulders = new THREE.Mesh(BOX, skin)
+  shoulders.scale.set(h * 0.34, h * 0.08, h * 0.18)
+  shoulders.position.y = torsoH * 0.92
+  torso.add(shoulders)
+  // a couple of exposed-sinew rib accents down the flank
+  for (let i = 0; i < 3; i++) {
+    const band = new THREE.Mesh(BOX, sinew)
+    band.scale.set(h * 0.255, h * 0.02, h * 0.172)
+    band.position.set(0, torsoH * (0.4 + i * 0.16), 0)
+    torso.add(band)
+  }
+  // abdominal sinew line down the centre
+  const abLine = new THREE.Mesh(BOX, sinew)
+  abLine.scale.set(h * 0.03, torsoH * 0.7, h * 0.01)
+  abLine.position.set(0, torsoH * 0.5, h * 0.086)
+  torso.add(abLine)
+
+  // ---- Head: lean, hard-cheekboned, lipless bared grin ----
+  const head = new THREE.Group()
+  const skull = new THREE.Mesh(BOX, skin)
+  skull.scale.set(h * 0.13, h * 0.15, h * 0.14)
+  head.add(skull)
+
+  // hard cheekbone ridges — angled sinew accents under the eyes
+  const cheekL = new THREE.Mesh(BOX, sinew)
+  const cheekR = new THREE.Mesh(BOX, sinew)
+  cheekL.scale.set(h * 0.05, h * 0.03, h * 0.03)
+  cheekR.scale.copy(cheekL.scale)
+  cheekL.position.set(-h * 0.045, -h * 0.01, h * 0.066)
+  cheekR.position.set(h * 0.045, -h * 0.01, h * 0.066)
+  cheekL.rotation.z = 0.3
+  cheekR.rotation.z = -0.3
+  head.add(cheekL, cheekR)
+
+  // glowing green eyes — small bright blocks set under a brow
+  const brow = new THREE.Mesh(BOX, skin)
+  brow.scale.set(h * 0.12, h * 0.02, h * 0.03)
+  brow.position.set(0, h * 0.035, h * 0.066)
+  head.add(brow)
+  const eyeL = new THREE.Mesh(BOX, eyeGlow)
+  const eyeR = new THREE.Mesh(BOX, eyeGlow)
+  eyeL.scale.set(h * 0.035, h * 0.02, h * 0.02)
+  eyeR.scale.copy(eyeL.scale)
+  eyeL.position.set(-h * 0.032, h * 0.012, h * 0.07)
+  eyeR.position.set(h * 0.032, h * 0.012, h * 0.07)
+  head.add(eyeL, eyeR)
+
+  // pointed elf-like ears
+  const earL = new THREE.Mesh(BOX, skin)
+  const earR = new THREE.Mesh(BOX, skin)
+  earL.scale.set(h * 0.015, h * 0.05, h * 0.02)
+  earR.scale.copy(earL.scale)
+  earL.position.set(-h * 0.068, h * 0.01, 0)
+  earR.position.set(h * 0.068, h * 0.01, 0)
+  earL.rotation.z = 0.5
+  earR.rotation.z = -0.5
+  head.add(earL, earR)
+
+  // Lipless bared grin: a dark maw slab with a permanent jagged white upper
+  // tooth row across it, no lips. The jaw carries the matching lower row.
+  const mawSlab = new THREE.Mesh(BOX, maw)
+  mawSlab.scale.set(h * 0.11, h * 0.05, h * 0.03)
+  mawSlab.position.set(0, -h * 0.045, h * 0.062)
+  head.add(mawSlab)
+  const upperTeeth = new THREE.Mesh(BOX, bone)
+  upperTeeth.scale.set(h * 0.10, h * 0.02, h * 0.018)
+  upperTeeth.position.set(0, -h * 0.035, h * 0.07)
+  head.add(upperTeeth)
+  // jagged look: a few tooth points hanging below the upper row
+  for (let i = 0; i < 6; i++) {
+    const tooth = new THREE.Mesh(BOX, bone)
+    tooth.scale.set(h * 0.012, h * 0.02, h * 0.016)
+    tooth.position.set((i - 2.5) * h * 0.018, -h * 0.05, h * 0.071)
+    head.add(tooth)
+  }
+
+  // hinged jaw with the lower jagged tooth row
+  const jaw = new THREE.Group()
+  jaw.position.set(0, -h * 0.05, h * 0.03)
+  const lowerTeeth = new THREE.Mesh(BOX, bone)
+  lowerTeeth.scale.set(h * 0.10, h * 0.02, h * 0.018)
+  lowerTeeth.position.set(0, -h * 0.01, h * 0.035)
+  jaw.add(lowerTeeth)
+  for (let i = 0; i < 6; i++) {
+    const tooth = new THREE.Mesh(BOX, bone)
+    tooth.scale.set(h * 0.012, h * 0.02, h * 0.016)
+    tooth.position.set((i - 2.5) * h * 0.018, h * 0.005, h * 0.036)
+    jaw.add(tooth)
+  }
+  head.add(jaw)
+
+  // Long shaggy dark-brown hair slab reaching the shoulders. Rendered as a
+  // couple of overlapping slabs so it reads as hanging locks, not a helmet.
+  const hairBack = new THREE.Mesh(BOX, hairMat)
+  hairBack.scale.set(h * 0.15, h * 0.16, h * 0.06)
+  hairBack.position.set(0, h * 0.0, -h * 0.05)
+  head.add(hairBack)
+  const hairTop = new THREE.Mesh(BOX, hairMat)
+  hairTop.scale.set(h * 0.15, h * 0.06, h * 0.15)
+  hairTop.position.set(0, h * 0.06, -h * 0.005)
+  head.add(hairTop)
+  // side locks down to the shoulders
+  const lockL = new THREE.Mesh(BOX, hairMat)
+  const lockR = new THREE.Mesh(BOX, hairMat)
+  lockL.scale.set(h * 0.03, h * 0.14, h * 0.05)
+  lockR.scale.copy(lockL.scale)
+  lockL.position.set(-h * 0.06, -h * 0.03, -h * 0.02)
+  lockR.position.set(h * 0.06, -h * 0.03, -h * 0.02)
+  head.add(lockL, lockR)
+
+  head.position.set(0, torsoH + h * 0.09, 0)
+  torso.add(head)
+
+  // Arms — lean, with exposed-sinew forearms. Hang from the shoulder girdle.
+  const armLen = h * 0.44
+  const armL = makeLimb(skin, h * 0.08, armLen, h * 0.08)
+  const armR = makeLimb(skin, h * 0.08, armLen, h * 0.08)
+  // forearm sinew accent on each arm
+  for (const a of [armL, armR]) {
+    const fore = new THREE.Mesh(BOX, sinew)
+    fore.scale.set(h * 0.085, armLen * 0.42, h * 0.085)
+    fore.position.y = -armLen * 0.72
+    a.pivot.add(fore)
+  }
+  armL.pivot.position.set(-h * 0.18, torsoH * 0.9, 0)
+  armR.pivot.position.set(h * 0.18, torsoH * 0.9, 0)
+  torso.add(armL.pivot, armR.pivot)
+
+  // Legs — from the hips at the base of the body (not the torso pivot, so they
+  // stay planted while the torso leans).
+  const legL = makeLimb(skin, h * 0.12, legLen, h * 0.13)
+  const legR = makeLimb(skin, h * 0.12, legLen, h * 0.13)
+  legL.pivot.position.set(-h * 0.09, legTop, 0)
+  legR.pivot.position.set(h * 0.09, legTop, 0)
+  body.add(legL.pivot, legR.pivot)
+
+  // Steam — like the colossal, scaled to 15m. Simmers faintly all battle.
+  const N = 40
+  const positions = new Float32Array(N * 3)
+  const data = new Float32Array(N * 5)
+  const seed = mulberry32(30717)
+  for (let i = 0; i < N; i++) {
+    const bx = (seed() - 0.5) * h * 0.5
+    const by = legTop + torsoH * (0.4 + seed() * 0.7)
+    const bz = (seed() - 0.5) * h * 0.34
+    data[i * 5 + 0] = bx
+    data[i * 5 + 1] = by
+    data[i * 5 + 2] = bz
+    data[i * 5 + 3] = seed()
+    data[i * 5 + 4] = 0.4 + seed() * 0.6
+    positions[i * 3 + 0] = bx
+    positions[i * 3 + 1] = by
+    positions[i * 3 + 2] = bz
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  const steam = new THREE.Points(geo, new THREE.PointsMaterial({
+    color: 0xf2ece2, size: h * 0.16, transparent: true, opacity: 0.12,
+    depthWrite: false, sizeAttenuation: true, map: PUFF_TEX,
+  }))
+  root.add(steam)
+
+  const shadow = new THREE.Mesh(CIRCLE, new THREE.MeshBasicMaterial({
+    color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false,
+  }))
+  shadow.rotation.x = -Math.PI / 2
+  shadow.scale.setScalar(h * 0.24)
+  shadow.position.y = 0.15
+  root.add(shadow)
+
+  return { root, body, torso, head, jaw, arms: [armL, armR], legs: [legL, legR], steam, steamData: data, shadow, h }
+}
+
+function updateRogue(rig: RogueRig, st: TitanState | null, t: number) {
+  const root = rig.root
+  if (!st || !st.visible) { root.visible = false; return }
+  root.visible = true
+  // pos[1] can be NEGATIVE during birth (rising out of a carcass) — apply verbatim.
+  root.position.set(st.pos[0], st.pos[1], st.pos[2])
+  root.rotation.y = st.yaw
+  rig.shadow.position.y = 0.15 - st.pos[1] // keep the shadow on the ground during birth
+  const h = rig.h
+
+  const crouch = st.crouch
+  const attack = st.attack
+  const carry = st.carry
+
+  // ---- base torso posture ----
+  // crouch bends the knees + leans the torso back into a roar / lift / kneel.
+  // carry raises the whole torso slightly upright (holding weight overhead).
+  let torsoLean = -crouch * 0.5 // lean back for roar/lift
+  rig.torso.position.y = rig.legs[0].pivot.position.y - crouch * h * 0.06 // sink at the waist
+
+  // knees bend with crouch
+  rig.legs[0].pivot.rotation.x = crouch * 0.5
+  rig.legs[1].pivot.rotation.x = crouch * 0.5
+
+  // head thrown back during the roar (crouch drives it)
+  rig.head.rotation.x = -crouch * 0.7 + 0.05
+  rig.jaw.rotation.x = crouch * 0.5 // maw gapes for the roar
+
+  // ---- carry: both arms overhead, heavy slow gait ----
+  if (carry > 0) {
+    // arms raise overhead holding the boulder (rendered elsewhere)
+    const raise = carry
+    rig.arms[0].pivot.rotation.set(-Math.PI * 0.92 * raise, 0, 0.15 * raise)
+    rig.arms[1].pivot.rotation.set(-Math.PI * 0.92 * raise, 0, -0.15 * raise)
+    torsoLean += carry * 0.12 // slight upright brace under the weight
+    rig.jaw.rotation.x = Math.max(rig.jaw.rotation.x, carry * 0.15) // strain
+  }
+
+  // ---- punch: windup 0..0.45, cross 0.45..0.6, recover 0.6..1 ----
+  if (attack > 0 && carry <= 0.02) {
+    let ext: number // right-arm extension: -1 pulled back → +1 fully crossed
+    let twist: number
+    if (attack < 0.45) {
+      const p = attack / 0.45
+      ext = -0.6 * p // wind the fist back
+      twist = -0.35 * p
+    } else if (attack < 0.6) {
+      const p = (attack - 0.45) / 0.15
+      ext = -0.6 + 1.6 * p // explosive straight cross
+      twist = -0.35 + 0.6 * p
+    } else {
+      const p = (attack - 0.6) / 0.4
+      ext = 1.0 * (1 - p) // recover to neutral
+      twist = 0.25 * (1 - p)
+    }
+    rig.torso.rotation.y = twist
+    // right arm drives the cross; left arm guards
+    rig.arms[1].pivot.rotation.set(-Math.PI * 0.5 + ext * 1.2, ext * 0.5, -0.15)
+    rig.arms[0].pivot.rotation.set(-0.5, 0, 0.3)
+  } else {
+    rig.torso.rotation.y = 0
+  }
+
+  rig.torso.rotation.x = torsoLean
+
+  // ---- run cycle (only when not punching/carrying overrides the arms) ----
+  const heavy = carry > 0.02
+  if (st.walkSpeed > 0) {
+    const stride = (st.walkSpeed * 2.2) / h
+    const ph = t * stride * Math.PI + 0.5
+    const s = Math.sin(ph)
+    // exaggerate arm swing when sprinting fast; damp when heavy-carry
+    const legSwing = heavy ? 0.55 : 1.15
+    const armSwing = heavy ? 0 : Math.min(1.5, 0.8 + st.walkSpeed * 0.04)
+    rig.legs[0].pivot.rotation.x = crouch * 0.5 + s * legSwing
+    rig.legs[1].pivot.rotation.x = crouch * 0.5 - s * legSwing
+    if (!heavy && attack <= 0.02) {
+      rig.arms[0].pivot.rotation.set(-s * armSwing, 0, 0.14)
+      rig.arms[1].pivot.rotation.set(s * armSwing, 0, -0.14)
+    }
+    // body bounce — reduced heavily during the carry
+    rig.body.position.y = Math.abs(Math.cos(ph)) * h * (heavy ? 0.006 : 0.025)
+  } else {
+    rig.body.position.y = 0
+    if (attack <= 0.02 && carry <= 0.02 && crouch < 0.02) {
+      // idle breathing / menace
+      const b = Math.sin(t * 1.4)
+      rig.arms[0].pivot.rotation.set(b * 0.05, 0, 0.16)
+      rig.arms[1].pivot.rotation.set(-b * 0.05, 0, -0.16)
+    }
+  }
+
+  // ---- steam: simmers faintly, driven by st.steam ----
+  const amt = Math.max(0.05, st.steam)
+  const pos = rig.steam.geometry.getAttribute('position') as THREE.BufferAttribute
+  const data = rig.steamData
+  const N = data.length / 5
+  const rise = h * 0.5
+  for (let i = 0; i < N; i++) {
+    const baseY = data[i * 5 + 1]
+    const loop = (data[i * 5 + 3] + t * 0.12) % 1
+    pos.setXYZ(i, data[i * 5 + 0], baseY + loop * rise, data[i * 5 + 2])
+  }
+  pos.needsUpdate = true
+  const sm = rig.steam.material as THREE.PointsMaterial
+  sm.opacity = Math.min(0.9, 0.1 + amt * 0.7)
+}
+
+// ===========================================================================
 // COMPONENT
 // ===========================================================================
 export function Titans() {
@@ -768,6 +1219,7 @@ export function Titans() {
   )
   const colossal = useMemo(() => buildColossal(), [])
   const armored = useMemo(() => buildArmored(), [])
+  const rogue = useMemo(() => buildRogue(), [])
 
   const groupRef = useRef<THREE.Group>(null)
 
@@ -785,6 +1237,7 @@ export function Titans() {
 
     updateColossal(colossal, frame.colossal, frame.colossalSteam, t)
     updateArmored(armored, frame.armored, t)
+    updateRogue(rogue, frame.rogue, t)
   })
 
   return (
@@ -794,6 +1247,7 @@ export function Titans() {
       ))}
       <primitive object={colossal.root} />
       <primitive object={armored.root} />
+      <primitive object={rogue.root} />
     </group>
   )
 }

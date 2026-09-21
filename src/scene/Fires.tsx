@@ -16,7 +16,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getFrame } from '../incidents/driver.ts'
 import { mulberry32 } from '../world/rng.ts'
-import { FIRE_SPOTS } from '../incidents/ep1.ts'
+import type { FireSpot } from '../incidents/ep1.ts'
 
 // ---------------------------------------------------------------------------
 // tuning
@@ -33,6 +33,20 @@ const MAX_LIGHTS = 5
 // ---------------------------------------------------------------------------
 const CONE = new THREE.ConeGeometry(1, 1, 8, 1, true)
 const PLANE = new THREE.PlaneGeometry(1, 1)
+
+// soft radial sprite so smoke planes read as puffs, not hard grey rectangles
+const SMOKE_TEX = (() => {
+  const c = document.createElement('canvas')
+  c.width = c.height = 64
+  const g = c.getContext('2d')!
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)')
+  grad.addColorStop(0.55, 'rgba(255,255,255,0.45)')
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  g.fillStyle = grad
+  g.fillRect(0, 0, 64, 64)
+  return new THREE.CanvasTexture(c)
+})()
 
 const dummy = new THREE.Object3D()
 
@@ -51,7 +65,8 @@ interface FireDesc {
   smokeSway: number[]
 }
 
-const FIRES: FireDesc[] = FIRE_SPOTS.map((f, i) => {
+function buildFires(spots: FireSpot[]): FireDesc[] {
+  return spots.map((f, i) => {
   const rand = mulberry32(2000 + i)
   const smokePhase: number[] = []
   const smokeDrift: number[] = []
@@ -63,27 +78,19 @@ const FIRES: FireDesc[] = FIRE_SPOTS.map((f, i) => {
     smokeDriftZ.push((rand() - 0.5) * 6)
     smokeSway.push(rand() * Math.PI * 2)
   }
-  return {
-    x: f.x,
-    z: f.z,
-    t0: f.t0,
-    scale: f.scale,
-    seed: i * 7 + 3,
-    smokePhase,
-    smokeDrift,
-    smokeDriftZ,
-    smokeSway,
-  }
-})
-
-// The 5 largest fires get a point light.
-const LIT_INDICES = FIRES.map((f, i) => ({ i, scale: f.scale }))
-  .sort((a, b) => b.scale - a.scale)
-  .slice(0, MAX_LIGHTS)
-  .map((o) => o.i)
-
-const FLAME_COUNT = FIRES.length
-const SMOKE_COUNT = FIRES.length * SMOKE_PER_FIRE
+    return {
+      x: f.x,
+      z: f.z,
+      t0: f.t0,
+      scale: f.scale,
+      seed: i * 7 + 3,
+      smokePhase,
+      smokeDrift,
+      smokeDriftZ,
+      smokeSway,
+    }
+  })
+}
 
 // deterministic flicker in [0,1]-ish from t (no wall clock)
 function flicker(t: number, seed: number): number {
@@ -96,7 +103,19 @@ function flicker(t: number, seed: number): number {
 }
 
 // ---------------------------------------------------------------------------
-export function Fires() {
+export function Fires({ spots, forId }: { spots: FireSpot[]; forId: string }) {
+  const FIRES = useMemo(() => buildFires(spots), [spots])
+  // The 5 largest fires get a point light.
+  const LIT_INDICES = useMemo(
+    () =>
+      FIRES.map((f, i) => ({ i, scale: f.scale }))
+        .sort((a, b) => b.scale - a.scale)
+        .slice(0, MAX_LIGHTS)
+        .map((o) => o.i),
+    [FIRES],
+  )
+  const FLAME_COUNT = FIRES.length
+  const SMOKE_COUNT = FIRES.length * SMOKE_PER_FIRE
   const outerRef = useRef<THREE.InstancedMesh>(null)
   const midRef = useRef<THREE.InstancedMesh>(null)
   const innerRef = useRef<THREE.InstancedMesh>(null)
@@ -146,6 +165,7 @@ export function Fires() {
     () =>
       new THREE.MeshBasicMaterial({
         color: 0x2b2824,
+        map: SMOKE_TEX,
         transparent: true,
         opacity: 0.4,
         depthWrite: false,
@@ -162,7 +182,7 @@ export function Fires() {
     const smoke = smokeRef.current
     if (!outer || !mid || !inner || !smoke) return
 
-    const active = frame.active
+    const active = frame.id === forId
     const t = frame.t
 
     // ---- flames --------------------------------------------------------

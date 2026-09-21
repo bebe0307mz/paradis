@@ -19,6 +19,9 @@ interface ParadisState {
   // ---- HUD-reactive incident facts (updated at low frequency by the driver) ----
   caption: string | null
   deaths: number
+  soldiersLost: number
+  titansSlain: number
+  victory: boolean
   endCard: boolean
   /** director cam: scripted shots while an incident plays; any drag/wheel breaks out */
   cinematic: boolean
@@ -32,7 +35,14 @@ interface ParadisState {
   setPlaying: (p: boolean) => void
   seek: (t: number) => void
   setSpeed: (s: number) => void
-  setHud: (h: { caption: string | null; deaths: number; endCard: boolean }) => void
+  setHud: (h: {
+    caption: string | null
+    deaths: number
+    endCard: boolean
+    soldiersLost: number
+    titansSlain: number
+    victory: boolean
+  }) => void
   requestFly: (f: FlyTarget) => void
   setCinematic: (c: boolean) => void
 }
@@ -44,21 +54,54 @@ export const useParadis = create<ParadisState>((set, get) => ({
   speed: 1,
   caption: null,
   deaths: 0,
+  soldiersLost: 0,
+  titansSlain: 0,
+  victory: false,
   endCard: false,
   cinematic: false,
   flyTo: null,
   flySeq: 0,
 
   startIncident: (id) =>
-    set({ incident: id, t: 0, playing: true, deaths: 0, caption: null, endCard: false, cinematic: true }),
+    set({
+      incident: id,
+      t: 0,
+      playing: true,
+      deaths: 0,
+      soldiersLost: 0,
+      titansSlain: 0,
+      victory: false,
+      caption: null,
+      endCard: false,
+      cinematic: true,
+    }),
   stopIncident: () =>
-    set({ incident: null, playing: false, t: 0, deaths: 0, caption: null, endCard: false, cinematic: false }),
+    set({
+      incident: null,
+      playing: false,
+      t: 0,
+      deaths: 0,
+      soldiersLost: 0,
+      titansSlain: 0,
+      victory: false,
+      caption: null,
+      endCard: false,
+      cinematic: false,
+    }),
   setPlaying: (p) => set({ playing: p }),
   seek: (t) => set({ t, endCard: false }),
   setSpeed: (s) => set({ speed: s }),
   setHud: (h) => {
     const s = get()
-    if (s.caption !== h.caption || s.deaths !== h.deaths || s.endCard !== h.endCard) set(h)
+    if (
+      s.caption !== h.caption ||
+      s.deaths !== h.deaths ||
+      s.endCard !== h.endCard ||
+      s.soldiersLost !== h.soldiersLost ||
+      s.titansSlain !== h.titansSlain ||
+      s.victory !== h.victory
+    )
+      set(h)
   },
   requestFly: (f) => set({ flyTo: f, flySeq: get().flySeq + 1 }),
   setCinematic: (c) => set({ cinematic: c }),

@@ -65,8 +65,19 @@ function WallLabel({ text, r }: { text: string; r: number }) {
   )
 }
 
-/** pulsing incident marker over the Shiganshina outer gate */
-function IncidentPin() {
+/** pulsing incident marker over a district's outer gate */
+function IncidentPin({
+  episode,
+  label,
+  z,
+  color,
+}: {
+  episode: string
+  label: string
+  /** world z of the pin (all playable incidents sit on the south axis, x=0) */
+  z: number
+  color: string
+}) {
   const incident = useParadis((s) => s.incident)
   const startIncident = useParadis((s) => s.startIncident)
   const requestFly = useParadis((s) => s.requestFly)
@@ -85,11 +96,11 @@ function IncidentPin() {
   if (incident) return null
   const begin = (e: { stopPropagation: () => void }) => {
     e.stopPropagation()
-    startIncident('ep1')
-    requestFly({ target: [0, 45, 12480], position: [390, 230, 13230] })
+    startIncident(episode)
+    requestFly({ target: [0, 45, z - 70], position: [390, 230, z + 680] })
   }
   return (
-    <group ref={group} position={[0, 150, MARIA_R + DISTRICT_R]}>
+    <group ref={group} position={[0, 150, z]}>
       <Billboard>
         <mesh
           onClick={begin}
@@ -97,18 +108,18 @@ function IncidentPin() {
           onPointerOut={() => (document.body.style.cursor = 'auto')}
         >
           <circleGeometry args={[46, 32]} />
-          <meshBasicMaterial color="#8e2f24" transparent opacity={0.92} />
+          <meshBasicMaterial color={color} transparent opacity={0.92} />
         </mesh>
         <mesh ref={ring} position={[0, 0, -1]}>
           <ringGeometry args={[52, 60, 40]} />
-          <meshBasicMaterial color="#8e2f24" transparent opacity={0.6} side={THREE.DoubleSide} />
+          <meshBasicMaterial color={color} transparent opacity={0.6} side={THREE.DoubleSide} />
         </mesh>
         <mesh position={[6, 0, 1]} onClick={begin}>
           <circleGeometry args={[20, 3]} />
           <meshBasicMaterial color="#f4ede0" />
         </mesh>
         <Text position={[0, 92, 0]} fontSize={40} color="#f4ede0" outlineWidth={2.5} outlineColor={OUTLINE} letterSpacing={0.18}>
-          YEAR 845 — THE FALL
+          {label}
         </Text>
       </Billboard>
     </group>
@@ -129,7 +140,8 @@ export function Districts() {
           MITRAS
         </Text>
       </Billboard>
-      <IncidentPin />
+      <IncidentPin episode="ep1" label="YEAR 845 — THE FALL" z={MARIA_R + DISTRICT_R} color="#8e2f24" />
+      <IncidentPin episode="ep2" label="YEAR 850 — THE BATTLE" z={ROSE_R + DISTRICT_R} color="#8a6b1f" />
     </group>
   )
 }
