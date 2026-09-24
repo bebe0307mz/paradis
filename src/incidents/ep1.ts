@@ -154,6 +154,14 @@ const VICTIM_COUNT = PEOPLE.filter((p) => p.grabT !== undefined).length
 // static event exports — Gore/Fires render from these + frame.t (deterministic)
 // ---------------------------------------------------------------------------
 
+/** a titan footprint sample — Town.tsx crushes any building this passes over */
+export interface TitanTrack {
+  t: number
+  x: number
+  z: number
+  r: number
+}
+
 export interface KillEvent {
   /** the bite moment — the person reaches the mouth at grabT + 1.6 */
   t: number
@@ -256,6 +264,28 @@ const ARMORED_PATH: Keyframe[] = [
   { t: T_INNER_BREACH + 4, x: 0, z: GATE.z - 180 },
   { t: T_INNER_BREACH + 7, x: 0, z: GATE.z - 260 },
 ]
+
+/** every titan's footprint over time — buildings in the way get crushed */
+export const EP1_TITAN_TRACKS: TitanTrack[] = (() => {
+  const tracks: TitanTrack[] = []
+  for (const pt of PURE_TITANS) {
+    let lx = Infinity
+    let lz = Infinity
+    for (let t = pt.spawnT; t <= EP1_DURATION; t += 0.5) {
+      const s = sampleKeyframes(pt.frames, t)
+      if (Math.hypot(s.x - lx, s.z - lz) < 1.5) continue
+      tracks.push({ t, x: s.x, z: s.z, r: Math.max(2.4, pt.height * 0.3) })
+      lx = s.x
+      lz = s.z
+    }
+  }
+  // the Armored Titan at a full charge flattens a corridor
+  for (let t = T_ARMORED_SPAWN; t <= T_INNER_BREACH + 2; t += 0.3) {
+    const s = sampleKeyframes(ARMORED_PATH, t)
+    tracks.push({ t, x: s.x, z: s.z, r: 5.2 })
+  }
+  return tracks
+})()
 
 const frame: IncidentFrame = {
   active: false,

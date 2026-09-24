@@ -23,11 +23,8 @@ const T_BREACH = 14.2
 const T_PANIC = 15
 const T_VANISH = 19 // canon: at Trost the Colossal disappeared right after the kick
 const T_ERUPT = 38 // the Rogue Titan tears out of the titan that ate Eren
-const T_LIFT = 63
-const T_CARRY = 66
-const T_SLAM = 77
-const T_SEALED = 77.8
-const T_ENDCARD = 90
+// T_LIFT / T_CARRY / T_SLAM / T_SEALED / T_ENDCARD derive from the end of the
+// rogue's chase (computed below) so the timeline can never self-overlap
 
 const GATE = { x: TRO_INNER_GATE[0], z: TRO_INNER_GATE[2] } // inner gate (Wall Rose)
 const OUTER = { x: TRO_OUTER_GATE[0], z: TRO_OUTER_GATE[2] } // breached outer gate
@@ -100,10 +97,20 @@ function buildPures(): PureTitan[] {
     const spawnT = 15 + k * 2.2 + range(rand, 0, 1.2)
     const frames: Keyframe[] = []
     const eats: PureTitan['eats'] = []
-    let x = range(rand, -14, 14)
-    let z = OUTER.z - 8
+    // enter THROUGH the breach: appear outside the outer gate and funnel in
+    // through the hole so the broken gate visibly feeds the invasion
+    let x = range(rand, -9, 9)
+    let z = OUTER.z + 12
     let t = spawnT
     frames.push({ t, x, z })
+    {
+      const ix = range(rand, -13, 13)
+      const iz = OUTER.z - 18
+      t += Math.hypot(ix - x, iz - z) / speed
+      frames.push({ t, x: ix, z: iz })
+      x = ix
+      z = iz
+    }
     const legs = [
       { z: OUTER.z - range(rand, 70, 120), drift: 90 },
       { z: OUTER.z - range(rand, 180, 250), drift: 150 },
@@ -119,7 +126,7 @@ function buildPures(): PureTitan[] {
       frames.push({ t, x: nx, z: nz })
       x = nx
       z = nz
-      if (hunter && li < 2 && t < 34) {
+      if (hunter && li < 2 && t < 40) {
         eats.push({ start: t, end: t + EAT_DUR, x, z })
         t += EAT_DUR
         frames.push({ t, x, z })
@@ -142,6 +149,7 @@ const NAPE_KILLS: { titan: number; t: number }[] = [
   { titan: 2, t: 26 },
   { titan: 4, t: 31 },
   { titan: 6, t: 36 },
+  { titan: 8, t: 58 },
   { titan: 9, t: 70 },
   { titan: 10, t: 74 },
 ]
@@ -152,7 +160,7 @@ for (const nk of NAPE_KILLS) {
 
 // Rogue Titan punch victims, in hunt order. Times get finalized while building
 // the rogue's path (arrival-dependent) — placeholders here.
-const PUNCH_ORDER = [0, 3, 5, 7, 8]
+const PUNCH_ORDER = [0, 3, 5, 7]
 
 interface Punch {
   titan: number
@@ -166,7 +174,7 @@ const ERUPT_AT = sampleKeyframes(PURE_TITANS[1].frames, T_ERUPT)
 // Build the rogue path: erupt → roar → chase each punch victim (where that
 // victim will actually be when the rogue reaches it) → boulder → gate.
 const ROGUE_H = 15
-const ROGUE_SPEED = 11
+const ROGUE_SPEED = 15
 const PUNCHES: Punch[] = []
 const ROGUE_PATH: Keyframe[] = []
 {
@@ -174,35 +182,55 @@ const ROGUE_PATH: Keyframe[] = []
   let x = ERUPT_AT.x
   let z = ERUPT_AT.z
   ROGUE_PATH.push({ t, x, z })
-  t += 2.2 // the roar
+  t += 1.8 // the roar
   ROGUE_PATH.push({ t, x, z })
-  for (const idx of PUNCH_ORDER) {
-    const pt = PURE_TITANS[idx]
-    // iterate once: guess arrival, sample target there, refine
-    let arrive = t + 2
-    for (let iter = 0; iter < 3; iter++) {
-      const at = sampleKeyframes(pt.frames, arrive)
-      const d = Math.hypot(at.x - x, at.z - z)
-      arrive = t + Math.max(1.2, d / ROGUE_SPEED)
+  // hunt the NEAREST victim next (greedy, against each victim's future
+  // position) — keeps the whole fistfight inside the pre-boulder window
+  const remaining = [...PUNCH_ORDER]
+  while (remaining.length > 0) {
+    let bestRi = 0
+    let bestArrive = Infinity
+    for (let ri = 0; ri < remaining.length; ri++) {
+      const cand = PURE_TITANS[remaining[ri]]
+      let arrive = t + 2
+      for (let iter = 0; iter < 3; iter++) {
+        const at = sampleKeyframes(cand.frames, arrive)
+        const d = Math.hypot(at.x - x, at.z - z)
+        arrive = t + Math.max(1.0, d / ROGUE_SPEED)
+      }
+      if (arrive < bestArrive) {
+        bestArrive = arrive
+        bestRi = ri
+      }
     }
-    const at = sampleKeyframes(pt.frames, arrive)
-    ROGUE_PATH.push({ t: arrive, x: at.x, z: at.z })
-    const punchT = arrive + 0.45
+    const idx = remaining.splice(bestRi, 1)[0]
+    const pt = PURE_TITANS[idx]
+    const at = sampleKeyframes(pt.frames, bestArrive)
+    ROGUE_PATH.push({ t: bestArrive, x: at.x, z: at.z })
+    const punchT = bestArrive + 0.45
     PUNCHES.push({ titan: idx, t: punchT, x: at.x, z: at.z })
     pt.deathT = punchT
     pt.deathBy = 'punch'
-    t = arrive + 1.4 // wind-up, impact, recover
+    t = bestArrive + 1.1 // wind-up, impact, recover
     ROGUE_PATH.push({ t, x: at.x, z: at.z })
     x = at.x
     z = at.z
   }
-  // to the boulder
-  {
-    const d = Math.hypot(BOULDER_REST[0] - x, BOULDER_REST[2] - z)
-    const arrive = Math.max(T_LIFT - 0.5, t + d / ROGUE_SPEED)
-    ROGUE_PATH.push({ t: arrive, x: BOULDER_REST[0], z: BOULDER_REST[2] })
-    ROGUE_PATH.push({ t: T_CARRY, x: BOULDER_REST[0], z: BOULDER_REST[2] })
-  }
+}
+
+// boulder timeline — anchored to wherever the fistfight actually ended
+const CHASE_END = ROGUE_PATH[ROGUE_PATH.length - 1].t
+const T_LIFT = Math.max(63, CHASE_END + 0.8)
+const T_CARRY = T_LIFT + 3
+const T_SLAM = T_CARRY + 11
+const T_SEALED = T_SLAM + 0.8
+const T_ENDCARD = Math.min(93, T_SLAM + 12)
+{
+  const last = ROGUE_PATH[ROGUE_PATH.length - 1]
+  const d = Math.hypot(BOULDER_REST[0] - last.x, BOULDER_REST[2] - last.z)
+  const arrive = Math.max(CHASE_END + 0.4, Math.min(CHASE_END + d / ROGUE_SPEED, T_CARRY - 2))
+  ROGUE_PATH.push({ t: arrive, x: BOULDER_REST[0], z: BOULDER_REST[2] })
+  ROGUE_PATH.push({ t: T_CARRY, x: BOULDER_REST[0], z: BOULDER_REST[2] })
   // the carry: slow march up the main street to the breach
   ROGUE_PATH.push({ t: T_CARRY + 4, x: -60, z: GATE.z + 320 })
   ROGUE_PATH.push({ t: T_CARRY + 7.5, x: -6, z: OUTER.z - 120 })
@@ -287,8 +315,21 @@ interface SoldierSeg {
   zip: boolean
 }
 
+/** a scripted titan fight: the soldier orbits the titan on a cable anchored to
+ * it, swooping toward the nape. killT set = this soldier lands the cut. */
+interface Engagement {
+  soldier: number
+  titan: number
+  t0: number
+  t1: number
+  killT?: number
+  dir: 1 | -1
+  phase: number
+}
+
 interface Soldier {
   segs: SoldierSeg[]
+  engs: Engagement[]
   /** killed at this time (flung, then a body on the ground) */
   deathT?: number
   /** eaten — no body left */
@@ -305,8 +346,19 @@ function buildSoldiers(): Soldier[] {
     let y = 12
     let z = oz
     for (let hop = 0; hop < 22; hop++) {
-      const nx = Math.max(-320, Math.min(320, x + range(r, -70, 70)))
-      const nz = Math.max(GATE.z + 40, Math.min(OUTER.z - 40, patrolZ + range(r, -90, 90)))
+      let nx = Math.max(-320, Math.min(320, x + range(r, -70, 70)))
+      let nz = Math.max(GATE.z + 40, Math.min(OUTER.z - 40, patrolZ + range(r, -90, 90)))
+      // bias hops toward living titans — soldiers harass the enemy, they
+      // don't sightsee. Roughly half of all hops aim near a titan.
+      if (r() < 0.5) {
+        const tv = PURE_TITANS[Math.floor(r() * PURE_TITANS.length)]
+        const aliveUntil = tv.deathT ?? EP2_DURATION
+        if (t > tv.spawnT + 1 && t < aliveUntil) {
+          const at = sampleKeyframes(tv.frames, Math.min(t + 1.2, aliveUntil))
+          nx = Math.max(-320, Math.min(320, at.x + range(r, -24, 24)))
+          nz = Math.max(GATE.z + 40, Math.min(OUTER.z - 40, at.z + range(r, -24, 24)))
+        }
+      }
       const ny = 8 + r() * 8
       const d = Math.hypot(nx - x, nz - z)
       const dur = Math.max(0.9, d / 26) // zip speed ~26 m/s
@@ -320,7 +372,7 @@ function buildSoldiers(): Soldier[] {
       z = nz
       if (t > EP2_DURATION + 4) break
     }
-    return { segs }
+    return { segs, engs: [] }
   }
 
   // vanguard — engage near the breach
@@ -351,6 +403,34 @@ function buildSoldiers(): Soldier[] {
     soldiers[idx].deathT = t
     soldiers[idx].eaten = eaten
   }
+
+  // scripted titan fights. Every nape kill gets a killer + a wingman circling
+  // the titan; every soldier death happens MID-FIGHT, not on a random rooftop.
+  const engagements: Engagement[] = [
+    // killer + wingman per Garrison nape kill
+    { soldier: 0, titan: 2, t0: 22.8, killT: 26, t1: 28.5, dir: 1, phase: 0.4 },
+    { soldier: 3, titan: 2, t0: 23.4, t1: 26.6, dir: -1, phase: 2.6 },
+    { soldier: 5, titan: 4, t0: 27.5, killT: 31, t1: 33.5, dir: -1, phase: 1.2 },
+    { soldier: 7, titan: 4, t0: 28.2, t1: 31.6, dir: 1, phase: 4.1 },
+    { soldier: 9, titan: 6, t0: 32.5, killT: 36, t1: 38.5, dir: 1, phase: 2.0 },
+    { soldier: 12, titan: 6, t0: 33.2, t1: 36.6, dir: -1, phase: 5.0 },
+    { soldier: 13, titan: 8, t0: 54.5, killT: 58, t1: 60.5, dir: 1, phase: 3.0 },
+    { soldier: 15, titan: 8, t0: 55.2, t1: 58.6, dir: -1, phase: 0.6 },
+    { soldier: 19, titan: 9, t0: 66.5, killT: 70, t1: 72.5, dir: 1, phase: 0.9 },
+    { soldier: 20, titan: 9, t0: 67.2, t1: 70.6, dir: -1, phase: 3.3 },
+    { soldier: 22, titan: 10, t0: 70.5, killT: 74, t1: 76.5, dir: -1, phase: 1.7 },
+    { soldier: 25, titan: 10, t0: 71.2, t1: 74.6, dir: 1, phase: 4.6 },
+    // fights that go WRONG — these soldiers die inside the window
+    { soldier: 2, titan: 0, t0: 24.0, t1: 27.4, dir: 1, phase: 1.1 },
+    { soldier: 6, titan: 3, t0: 26.5, t1: 29.9, dir: -1, phase: 2.2 },
+    { soldier: 4, titan: 1, t0: 30.0, t1: 33.4, dir: 1, phase: 0.2 }, // Eren vs the bearded titan
+    { soldier: 1, titan: 5, t0: 31.8, t1: 35.4, dir: -1, phase: 3.9 },
+    { soldier: 11, titan: 8, t0: 41.0, t1: 44.4, dir: 1, phase: 2.8 },
+    { soldier: 18, titan: 9, t0: 65.3, t1: 68.4, dir: -1, phase: 5.5 },
+    { soldier: 21, titan: 10, t0: 68.6, t1: 71.9, dir: 1, phase: 1.5 },
+    { soldier: 24, titan: 10, t0: 71.6, t1: 74.4, dir: -1, phase: 0.7 },
+  ]
+  for (const e of engagements) soldiers[e.soldier].engs.push(e)
   return soldiers
 }
 
@@ -386,7 +466,83 @@ function sampleSoldier(s: Soldier, t: number, st: SoldierState): void {
   sampleSoldierAlive(s, t, st)
 }
 
+const TMP_ST: SoldierState = { pos: [0, 0, 0], yaw: 0, mode: 'zip', anchor: [0, -1, 0], speed: 0 }
+
+function sampleEngagement(e: Engagement, t: number, st: SoldierState): void {
+  const pt = PURE_TITANS[e.titan]
+  const h = pt.height
+  // orbit a corpse-frozen center once the titan drops
+  const c = sampleKeyframes(pt.frames, pt.deathT !== undefined ? Math.min(t, pt.deathT) : t)
+  const napeY = h * 0.88
+  const radius = Math.max(9, h * 0.85)
+  const ang = e.phase + e.dir * (t - e.t0) * 2.6
+  const climbEnd = (e.killT ?? e.t1) - 0.4
+  const climb = clamp01((t - e.t0) / Math.max(0.001, climbEnd - e.t0))
+  let x = c.x + Math.sin(ang) * radius
+  let z = c.z + Math.cos(ang) * radius
+  let y = h * 0.35 + (napeY - h * 0.35) * climb + Math.sin((t - e.t0) * 3.1) * h * 0.16
+  if (e.killT !== undefined && t > e.killT - 0.35) {
+    // the dive: spiral collapses onto the nape
+    const f = clamp01((t - (e.killT - 0.35)) / 0.35)
+    const bx = c.x - Math.sin(c.yaw) * h * 0.12
+    const bz = c.z - Math.cos(c.yaw) * h * 0.12
+    x += (bx - x) * f
+    z += (bz - z) * f
+    y += (napeY - y) * f
+  }
+  if (e.killT !== undefined && t > e.killT) {
+    // break away in a rising arc off the collapsing titan
+    const f = clamp01((t - e.killT) / Math.max(0.001, e.t1 - e.killT))
+    x += Math.sin(e.phase) * 30 * f
+    z += Math.cos(e.phase) * 30 * f
+    y = napeY * (1 - f) + 12 * f + Math.sin(f * Math.PI) * 9
+  }
+  st.pos[0] = x
+  st.pos[1] = Math.max(2.5, y)
+  st.pos[2] = z
+  st.yaw = ang + e.dir * (Math.PI / 2)
+  st.mode = 'zip'
+  st.anchor[0] = c.x
+  st.anchor[1] = napeY + 7
+  st.anchor[2] = c.z
+  st.speed = 24
+}
+
 function sampleSoldierAlive(s: Soldier, t: number, st: SoldierState): void {
+  let eng: Engagement | null = null
+  for (const e of s.engs) {
+    if (t >= e.t0 && t <= e.t1) {
+      eng = e
+      break
+    }
+  }
+  if (!eng) {
+    sampleSegs(s, t, st)
+    return
+  }
+  sampleEngagement(eng, t, st)
+  // blend in/out against the patrol path so entry and exit are continuous
+  const IN = 0.9
+  if (t < eng.t0 + IN) {
+    const f = (t - eng.t0) / IN
+    sampleSegs(s, eng.t0, TMP_ST)
+    if (TMP_ST.mode !== 'gone') {
+      st.pos[0] = TMP_ST.pos[0] + (st.pos[0] - TMP_ST.pos[0]) * f
+      st.pos[1] = TMP_ST.pos[1] + (st.pos[1] - TMP_ST.pos[1]) * f
+      st.pos[2] = TMP_ST.pos[2] + (st.pos[2] - TMP_ST.pos[2]) * f
+    }
+  } else if (t > eng.t1 - IN) {
+    const f = (eng.t1 - t) / IN
+    sampleSegs(s, eng.t1, TMP_ST)
+    if (TMP_ST.mode !== 'gone') {
+      st.pos[0] = TMP_ST.pos[0] + (st.pos[0] - TMP_ST.pos[0]) * f
+      st.pos[1] = TMP_ST.pos[1] + (st.pos[1] - TMP_ST.pos[1]) * f
+      st.pos[2] = TMP_ST.pos[2] + (st.pos[2] - TMP_ST.pos[2]) * f
+    }
+  }
+}
+
+function sampleSegs(s: Soldier, t: number, st: SoldierState): void {
   const first = s.segs[0]
   if (t < first.t0) {
     st.mode = 'gone'
@@ -448,12 +604,80 @@ export const EP2_KILL_EVENTS: KillEvent[] = [
 
 // fires stay OFF the main street (|x|<45) — the director cam backs down it
 // during the boulder carry and a flame against the lens whites out the shot
-export const EP2_FIRE_SPOTS: FireSpot[] = Array.from({ length: 10 }, (_, k) => ({
-  x: (k % 2 === 0 ? 1 : -1) * range(rand, 45, 260),
-  z: OUTER.z - range(rand, 50, 380),
-  t0: T_BREACH + 3 + k * 3 + range(rand, 0, 2),
-  scale: range(rand, 0.7, 1.5),
+export const EP2_FIRE_SPOTS: FireSpot[] = [
+  ...Array.from({ length: 10 }, (_, k) => ({
+    x: (k % 2 === 0 ? 1 : -1) * range(rand, 45, 260),
+    z: OUTER.z - range(rand, 50, 380),
+    t0: T_BREACH + 3 + k * 3 + range(rand, 0, 2),
+    scale: range(rand, 0.7, 1.5),
+  })),
+  // breach markers: rubble fires flanking the broken gate so the destination
+  // of the boulder carry is unmistakable (the intact inner gate has none)
+  { x: 34, z: OUTER.z - 26, t0: T_BREACH + 1.2, scale: 1.15 },
+  { x: -38, z: OUTER.z - 40, t0: T_BREACH + 2.2, scale: 0.95 },
+]
+
+import type { TitanTrack } from './ep1'
+
+/** every titan's footprint over time — buildings in the way get crushed */
+export const EP2_TITAN_TRACKS: TitanTrack[] = (() => {
+  const tracks: TitanTrack[] = []
+  for (const pt of PURE_TITANS) {
+    const end = Math.min(pt.deathT ?? EP2_DURATION, EP2_DURATION)
+    let lx = Infinity
+    let lz = Infinity
+    for (let t = pt.spawnT; t <= end; t += 0.5) {
+      const s = sampleKeyframes(pt.frames, t)
+      if (Math.hypot(s.x - lx, s.z - lz) < 1.5) continue
+      tracks.push({ t, x: s.x, z: s.z, r: Math.max(2.4, pt.height * 0.3) })
+      lx = s.x
+      lz = s.z
+    }
+    if (pt.deathT !== undefined) {
+      // the body comes down hard — flattens whatever it lands on
+      const s = sampleKeyframes(pt.frames, pt.deathT)
+      tracks.push({
+        t: pt.deathT + 0.7,
+        x: s.x - Math.sin(s.yaw) * pt.height * 0.35,
+        z: s.z - Math.cos(s.yaw) * pt.height * 0.35,
+        r: pt.height * 0.42,
+      })
+    }
+  }
+  // the rogue at a sprint
+  for (let t = T_ERUPT + 2.2; t <= T_SLAM; t += 0.35) {
+    const s = sampleKeyframes(ROGUE_PATH, t)
+    if (!s.moving) continue
+    tracks.push({ t, x: s.x, z: s.z, r: 4.4 })
+  }
+  return tracks
+})()
+
+/** rogue punch impacts — camera low-angles + debris/dust/blood bursts */
+export const EP2_PUNCHES = PUNCHES.map((p) => ({
+  t: p.t,
+  x: p.x,
+  z: p.z,
+  h: PURE_TITANS[p.titan].height,
 }))
+
+/** rogue footfalls while sprinting/carrying — dust kicks + ground thumps */
+export const EP2_ROGUE_STEPS: { t: number; x: number; z: number }[] = (() => {
+  const steps: { t: number; x: number; z: number }[] = []
+  for (let t = T_ERUPT + 2.2; t <= T_SLAM; t += 0.55) {
+    const s = sampleKeyframes(ROGUE_PATH, t)
+    if (!s.moving) continue
+    steps.push({ t, x: s.x, z: s.z })
+  }
+  return steps
+})()
+
+/** ride-along windows for the director cam: follow this soldier vs this titan.
+ * Window 2 covers the boulder lift — the escort fight where soldier 18 dies. */
+export const EP2_ENGAGE_SHOTS = [
+  { t0: 21.8, t1: 28.4, soldier: 0, titan: 2 },
+  { t0: T_LIFT + 0.6, t1: Math.min(68.2, T_CARRY + 5), soldier: 18, titan: 9 },
+]
 
 export interface FlareEvent {
   t0: number
@@ -467,7 +691,7 @@ export const FLARE_EVENTS: FlareEvent[] = [
   { t0: 16, x: 30, z: OUTER.z - 90, color: 'red' },
   { t0: 24, x: -90, z: GATE.z + 340, color: 'red' },
   { t0: 40.5, x: 60, z: GATE.z + 260, color: 'yellow' },
-  { t0: 61, x: BOULDER_REST[0], z: BOULDER_REST[2], color: 'green' },
+  { t0: T_LIFT - 2, x: BOULDER_REST[0], z: BOULDER_REST[2], color: 'green' },
   { t0: T_SEALED + 1.5, x: 0, z: OUTER.z - 80, color: 'yellow' },
 ]
 
@@ -482,6 +706,8 @@ export const EP2_SOLDIER_COUNT = SOLDIERS.length
 /** where the Rogue Titan tears out of the bearded titan (director cam + FX) */
 export const EP2_ERUPT = { x: ERUPT_AT.x, z: ERUPT_AT.z, t: T_ERUPT }
 export const EP2_T_SLAM = T_SLAM
+export const EP2_T_LIFT = T_LIFT
+export const EP2_T_CARRY = T_CARRY
 
 // ---------------------------------------------------------------------------
 // preallocated frame
@@ -596,10 +822,10 @@ const CAPTIONS: [number, number, string][] = [
   [38.6, 43, 'A titan TEARS ITS WAY OUT of the titan. And it is furious.'],
   [44, 49.5, 'It ignores the humans. It only hunts its own kind.'],
   [51, 57, 'The Rogue Titan — fifteen meters of fury, fighting for us.'],
-  [61.5, 66.5, 'The plan: one boulder, one hole, one chance. Protect him.'],
-  [68, 75.5, 'Soldiers die buying every meter of the carry.'],
-  [78.2, 82.5, 'THE GATE IS SEALED.'],
-  [84, 89, 'From the nape they cut out a boy. Alive. Humanity has a weapon.'],
+  [T_LIFT - 1.5, T_CARRY + 0.5, 'The plan: one boulder, one hole, one chance. Protect him.'],
+  [T_CARRY + 2, T_SLAM - 1.5, 'Soldiers die buying every meter of the carry.'],
+  [T_SLAM + 1.2, T_SLAM + 5.5, 'THE GATE IS SEALED.'],
+  [T_SLAM + 7, T_ENDCARD - 1, 'From the nape they cut out a boy. Alive. Humanity has a weapon.'],
 ]
 
 /** canon aftermath, per the Attack on Titan wiki — rendered on the end card */
@@ -633,8 +859,11 @@ export function evalEp2(t: number, active: boolean): IncidentFrame {
   let shake =
     decay(t - T_BREACH, 0.9, 0.9) +
     decay(t - T_ERUPT, 0.8, 0.8) +
-    decay(t - T_SLAM, 1.3, 1.1)
-  for (const p of PUNCHES) shake += decay(t - p.t, 0.35, 0.5)
+    decay(t - T_SLAM, 1.6, 1.1)
+  for (const p of PUNCHES) shake += decay(t - p.t, 0.6, 0.55)
+  // fifteen meters of muscle hitting the ground — every stride thumps
+  if (t >= T_ERUPT + 2.2 && t < T_LIFT - 1) shake += 0.09 * Math.abs(Math.sin(t * 5.6))
+  if (t >= T_CARRY && t < T_SLAM) shake += 0.14 * Math.abs(Math.sin(t * 2.7))
   frame.shake = shake
 
   // day-battle grading: grim after the breach, releasing after the seal

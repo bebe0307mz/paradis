@@ -139,6 +139,18 @@ const NAPE_LIFE = 0.5
 const NAPE_SPARKS = 8
 const NAPE_COLOR = 0xd8ffd0
 
+// ---------------------------------------------------------------------------
+// 5. BLADE TRAILS — a short glowing green-white streak dragged behind soldiers
+// mid-fight (speed >= 20). Direction is estimated from a cached previous-frame
+// position per soldier; a >15m jump (teleport/scrub) resets that cache entry so
+// the next frame self-corrects. This is the only wall-clock/visual-only state in
+// the file, and it's tolerant of scrubbing because a stale entry costs one frame.
+// ---------------------------------------------------------------------------
+const TRAIL_SPEED_MIN = 20
+const TRAIL_LEN = 3.4 // ribbon length in metres along motion
+const TRAIL_RESET = 15 // position jump that invalidates the cached prev pos
+const TRAIL_COLOR = 0xd6ffcf
+
 const NAPE_SLASH_COUNT = NAPE_EVENTS.length * 2 // two crossed quads each
 const NAPE_SPARK_COUNT = NAPE_EVENTS.length * NAPE_SPARKS
 
@@ -162,6 +174,13 @@ export function Soldiers() {
   // ---- nape refs ----
   const slashRef = useRef<InstancedMesh>(null)
   const sparkRef = useRef<InstancedMesh>(null)
+  // ---- blade trail refs ----
+  const trailRef = useRef<InstancedMesh>(null)
+  // per-soldier previous-frame world position + validity, for direction estimate
+  const trailPrev = useMemo(
+    () => ({ x: new Float32Array(SOLDIER_COUNT), y: new Float32Array(SOLDIER_COUNT), z: new Float32Array(SOLDIER_COUNT), valid: new Uint8Array(SOLDIER_COUNT) }),
+    [],
+  )
 
   // seeded traits (built once at mount, deterministic)
   const traits = useMemo<SoldierTrait[]>(() => {
@@ -227,6 +246,12 @@ export function Soldiers() {
   const smokeGeo = useMemo(() => new PlaneGeometry(1, 1), [])
   const slashGeo = useMemo(() => new PlaneGeometry(1, 0.18), [])
   const sparkGeo = useMemo(() => new SphereGeometry(0.35, 6, 5), [])
+  // unit quad centred on +X so scaling x = trail length trails it behind the point
+  const trailGeo = useMemo(() => {
+    const g = new PlaneGeometry(1, 1)
+    g.translate(-0.5, 0, 0) // pivot at the leading edge; ribbon extends toward -X
+    return g
+  }, [])
 
   // ---- materials ----
   const bodyMat = useMemo(() => new MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 }), [])
@@ -265,6 +290,21 @@ export function Soldiers() {
   )
   const sparkMat = useMemo(
     () => new MeshBasicMaterial({ color: NAPE_COLOR, transparent: true, opacity: 0, blending: AdditiveBlending, depthWrite: false, toneMapped: false }),
+    [],
+  )
+  // radial-mapped so the stretched quad reads as a soft streak, not a hard bar
+  const trailMat = useMemo(
+    () =>
+      new MeshBasicMaterial({
+        color: TRAIL_COLOR,
+        map: PUFF_TEX,
+        transparent: true,
+        opacity: 0.75,
+        blending: AdditiveBlending,
+        depthWrite: false,
+        side: DoubleSide,
+        toneMapped: false,
+      }),
     [],
   )
 
@@ -428,6 +468,65 @@ export function Soldiers() {
     cm.instanceMatrix.needsUpdate = true
     hm.instanceMatrix.needsUpdate = true
     cbm.instanceMatrix.needsUpdate = true
+
+    // ---------------------------------------------------------------------
+    // 5. blade trails — glowing streak behind fast (mid-fight) soldiers.
+    // Direction from the cached previous-frame position; a big jump resets it.
+    // ---------------------------------------------------------------------
+    const tlm = trailRef.current
+    if (tlm) {
+      const camPos = state.camera.position
+      for (let i = 0; i < SOLDIER_COUNT; i++) {
+        const s = active ? soldiers[i] : undefined
+        const fighting = !!s && s.mode === 'zip' && s.speed >= TRAIL_SPEED_MIN
+        if (!fighting) {
+          trailPrev.valid[i] = 0
+          hide(tlm, i)
+          continue
+        }
+        const x = s!.pos[0]
+        const y = s!.pos[1]
+        const z = s!.pos[2]
+        if (!trailPrev.valid[i]) {
+          // first fighting frame (or after a jump): seed the cache, draw nothing
+          trailPrev.x[i] = x
+          trailPrev.y[i] = y
+          trailPrev.z[i] = z
+          trailPrev.valid[i] = 1
+          hide(tlm, i)
+          continue
+        }
+        vDir.set(x - trailPrev.x[i], y - trailPrev.y[i], z - trailPrev.z[i])
+        const step = vDir.length()
+        // update the cache for next frame regardless of what we render this one
+        trailPrev.x[i] = x
+        trailPrev.y[i] = y
+        trailPrev.z[i] = z
+        if (step > TRAIL_RESET || step < 1e-4) {
+          // discontinuity (scrub/teleport) or standing still: skip this frame
+          hide(tlm, i)
+          continue
+        }
+        // orient the ribbon so its +X edge points along travel, then billboard
+        // its roll toward the camera by aligning the quad's normal to the view.
+        vDir.normalize()
+        // build a basis: X = travel dir, Z = toward camera, Y = X cross Z
+        vA.set(camPos.x - x, camPos.y - y, camPos.z - z).normalize()
+        vB.crossVectors(vDir, vA) // ribbon's local up
+        if (vB.lengthSq() < 1e-6) vB.set(0, 1, 0)
+        vB.normalize()
+        vA.crossVectors(vDir, vB).normalize() // re-orthogonalized normal
+        // rotation matrix columns (X=vDir, Y=vB, Z=vA) -> quaternion
+        dummy.matrix.makeBasis(vDir, vB, vA)
+        quat.setFromRotationMatrix(dummy.matrix)
+        dummy.position.set(x, y, z)
+        dummy.quaternion.copy(quat)
+        dummy.scale.set(TRAIL_LEN, 0.55, 1)
+        dummy.updateMatrix()
+        tlm.setMatrixAt(i, dummy.matrix)
+      }
+      tlm.instanceMatrix.needsUpdate = true
+    }
 
     // ---------------------------------------------------------------------
     // 3. flares — tracer sphere + smoke column, deterministic in t
@@ -602,6 +701,12 @@ export function Soldiers() {
       <instancedMesh
         ref={sparkRef}
         args={[sparkGeo, sparkMat, NAPE_SPARK_COUNT]}
+        frustumCulled={false}
+      />
+      {/* blade trails */}
+      <instancedMesh
+        ref={trailRef}
+        args={[trailGeo, trailMat, SOLDIER_COUNT]}
         frustumCulled={false}
       />
     </group>

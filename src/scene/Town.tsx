@@ -14,14 +14,22 @@
 // zero per-frame work. Placement is deterministic (seeded per district).
 
 import { useMemo, useRef, useLayoutEffect } from 'react'
+import { useFrame } from '@react-three/fiber'
 import {
   BoxGeometry,
   BufferGeometry,
+  CanvasTexture,
   CylinderGeometry,
   Color,
+  Euler,
   Float32BufferAttribute,
   InstancedMesh,
+  Matrix4,
+  MeshBasicMaterial,
   Object3D,
+  PlaneGeometry,
+  Quaternion,
+  Vector3,
 } from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import {
@@ -32,6 +40,10 @@ import {
   type DistrictDef,
 } from '../world/constants'
 import { mulberry32, range } from '../world/rng'
+import { getFrame } from '../incidents/driver'
+import { EP1_TITAN_TRACKS } from '../incidents/ep1'
+import { EP2_TITAN_TRACKS } from '../incidents/ep2'
+import type { TitanTrack } from '../incidents/ep1'
 
 // ---------------------------------------------------------------------------
 // palette — aged, desaturated, earthy. NOT pastel.
@@ -51,6 +63,43 @@ const CIVIC_WALL = ['#b7ac93', '#ab9f83']
 const MITRAS_WALL = ['#e2dccb', '#d6cfba', '#e9e4d5']
 const MITRAS_SLATE = ['#5c6a74', '#4f5c66', '#6b7a83']
 const KEEP_COLOR = '#e9e2d3'
+
+// ---------------------------------------------------------------------------
+// crush / collapse tuning + shared scratch. When a titan foot tramples a
+// building it caves in over COLLAPSE_DUR into a tilted heap of rubble; a dust
+// puff bursts at the moment of impact. Everything is a PURE function of frame.t
+// so scrubbing the timeline backward restores buildings exactly.
+// ---------------------------------------------------------------------------
+const COLLAPSE_DUR = 0.7 // seconds from first contact to fully caved
+const CRUSH_SCALE_Y = 0.15 // residual height fraction (a flat rubble heap)
+const CRUSH_SINK = 0.4 // metres the heap settles into the ground
+const DUST_DUR = 2.2 // seconds the dust puff lives past impact
+
+// soft radial sprite — a bare mesh/Points without a radial map renders as a hard
+// square; this gives the dust a feathered edge. Grey-brown, generated once.
+const DUST_TEX = (() => {
+  const c = document.createElement('canvas')
+  c.width = c.height = 64
+  const g = c.getContext('2d')!
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+  grad.addColorStop(0, 'rgba(255,255,255,0.85)')
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.4)')
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  g.fillStyle = grad
+  g.fillRect(0, 0, 64, 64)
+  return new CanvasTexture(c)
+})()
+
+const DUST_PLANE = new PlaneGeometry(1, 1)
+
+// per-frame scratch — reused, never allocated inside useFrame
+const _mat = new Matrix4()
+const _pos = new Vector3()
+const _quat = new Quaternion()
+const _q2 = new Quaternion()
+const _axis = new Vector3()
+const _scl = new Vector3()
+const _euler = new Euler()
 
 // deterministic seed from a district id string
 function hashId(id: string): number {
@@ -452,6 +501,9 @@ interface Placement {
   z: number
   yaw: number
   tint: number // multiplier 0.9..1.05
+  // which episode's titan tracks can crush this building ('ep1' for Shiganshina,
+  // 'ep2' for Trost, undefined elsewhere — those stay pristine, zero per-frame cost)
+  crushEp?: 'ep1' | 'ep2'
 }
 
 function layoutDistrict(
@@ -466,6 +518,10 @@ function layoutDistrict(
   const o = districtOutward(dd)
   const l: [number, number, number] = [Math.cos(dd.angle), 0, -Math.sin(dd.angle)]
   const baseYaw = Math.atan2(o[0], o[2]) // gable end faces down the street
+
+  // only the two districts an episode actually plays out in take damage
+  const crushEp: 'ep1' | 'ep2' | undefined =
+    dd.id === 'shiganshina' ? 'ep1' : dd.id === 'trost' ? 'ep2' : undefined
 
   const out: Placement[] = []
 
@@ -514,6 +570,7 @@ function layoutDistrict(
         z: wz,
         yaw: face + range(rand, -0.05, 0.05),
         tint: range(rand, 0.9, 1.05),
+        crushEp,
       })
       placed++
     }
@@ -524,7 +581,7 @@ function layoutDistrict(
     const cv = cvSign * range(rand, 66, 110)
     const wx = C[0] + o[0] * cu + l[0] * cv
     const wz = C[2] + o[2] * cu + l[2] * cv
-    out.push({ a, x: wx, z: wz, yaw: baseYaw + range(rand, -0.03, 0.03), tint: range(rand, 0.95, 1.05) })
+    out.push({ a, x: wx, z: wz, yaw: baseYaw + range(rand, -0.03, 0.03), tint: range(rand, 0.95, 1.05), crushEp })
   }
   if (dd.named) placeCivic(CHURCH_I, range(rand, 40, 55), -1)
   if (dd.id === 'shiganshina' || dd.named) placeCivic(GUILD_I, range(rand, 70, 120), 1)
@@ -670,7 +727,50 @@ function layoutFurniture(): {
 }
 
 // ---------------------------------------------------------------------------
+// Crush precompute. For a crushable placement, find the earliest track sample
+// whose footprint overlaps the building's own footprint. halfExt is an
+// approximate horizontal half-extent of the archetype (~0.6 × max(w, depth)).
+// Returns undefined if no titan ever reaches this building.
+// ---------------------------------------------------------------------------
+function earliestCrushT(
+  x: number,
+  z: number,
+  halfExt: number,
+  tracks: TitanTrack[],
+): number | undefined {
+  let best: number | undefined
+  for (let i = 0; i < tracks.length; i++) {
+    const s = tracks[i]
+    const reach = s.r + halfExt
+    const dx = x - s.x
+    const dz = z - s.z
+    if (dx * dx + dz * dz < reach * reach) {
+      if (best === undefined || s.t < best) best = s.t
+    }
+  }
+  return best
+}
+
+// one crushable instance: its base transform plus the precomputed crush schedule
+interface Crushable {
+  i: number // instance index in the InstancedMesh
+  x: number
+  z: number
+  yaw: number
+  crushT: number
+  ep: 'ep1' | 'ep2'
+  // seeded rubble tilt: a horizontal axis (unit) + a target lean angle
+  axX: number
+  axZ: number
+  lean: number
+}
+
+// ---------------------------------------------------------------------------
 // A generic instanced-archetype mesh: one geometry, N placements, baked tint.
+// If any placement carries a crushEp, those instances collapse under titan
+// feet per frame (pure function of frame.t) and spawn deterministic dust; all
+// other instances — and meshes with no crushable placements at all — stay
+// fully static with zero per-frame work.
 // ---------------------------------------------------------------------------
 function ArchetypeMesh({
   geometry,
@@ -678,10 +778,51 @@ function ArchetypeMesh({
   roughness,
 }: {
   geometry: BufferGeometry
-  placements: { x: number; z: number; yaw: number; tint?: number }[]
+  placements: Placement[] | { x: number; z: number; yaw: number; tint?: number }[]
   roughness: number
 }) {
   const ref = useRef<InstancedMesh>(null)
+  const dustRef = useRef<InstancedMesh>(null)
+
+  // approximate footprint half-extent from the archetype's own bounding box
+  const halfExt = useMemo(() => {
+    geometry.computeBoundingBox()
+    const bb = geometry.boundingBox
+    if (!bb) return 3
+    return 0.6 * Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z)
+  }, [geometry])
+
+  // precompute the crushable subset (empty for furniture / undamaged districts)
+  const crushables = useMemo(() => {
+    const list: Crushable[] = []
+    for (let i = 0; i < placements.length; i++) {
+      const p = placements[i] as Placement
+      const ep = p.crushEp
+      if (!ep) continue
+      const tracks = ep === 'ep1' ? EP1_TITAN_TRACKS : EP2_TITAN_TRACKS
+      const crushT = earliestCrushT(p.x, p.z, halfExt, tracks)
+      if (crushT === undefined) continue
+      // seed a tilt axis + lean from the building position so rubble reads
+      // varied but is fully deterministic (no Math.random at render time)
+      const seed = hashId(`${ep}:${Math.round(p.x)}:${Math.round(p.z)}:${i}`)
+      const r = mulberry32(seed)
+      const ang = r() * Math.PI * 2
+      list.push({
+        i,
+        x: p.x,
+        z: p.z,
+        yaw: p.yaw,
+        crushT,
+        ep,
+        axX: Math.cos(ang),
+        axZ: Math.sin(ang),
+        lean: range(r, 0.1, 0.25),
+      })
+    }
+    return list
+  }, [placements, halfExt])
+
+  // bake the base (undamaged) matrices + tint once
   useLayoutEffect(() => {
     const m = ref.current
     if (!m) return
@@ -701,16 +842,110 @@ function ArchetypeMesh({
     m.instanceMatrix.needsUpdate = true
     if (m.instanceColor) m.instanceColor.needsUpdate = true
   }, [placements])
+
+  // per-frame collapse — ONLY touches the crushable subset. Skipped entirely
+  // (component still mounts) when nothing here is crushable.
+  const hasCrush = crushables.length > 0
+  useFrame(({ camera }) => {
+    if (!hasCrush) return
+    const m = ref.current
+    const dust = dustRef.current
+    if (!m) return
+    const frame = getFrame()
+    const t = frame.t
+    let matChanged = false
+
+    for (let k = 0; k < crushables.length; k++) {
+      const c = crushables[k]
+      const active = frame.id === c.ep
+      // collapse progress 0..1 (0 = pristine, 1 = flattened). Backwards scrub or
+      // an inactive episode restores the exact pristine matrix.
+      const prog = active ? Math.min(1, Math.max(0, (t - c.crushT) / COLLAPSE_DUR)) : 0
+
+      _pos.set(c.x, 0, c.z)
+      if (prog <= 0) {
+        // pristine — identity rotation about y = base matrix
+        _euler.set(0, c.yaw, 0)
+        _quat.setFromEuler(_euler)
+        _scl.set(1, 1, 1)
+      } else {
+        // ease-out so the cave-in snaps then settles
+        const e = 1 - (1 - prog) * (1 - prog)
+        _pos.y = -CRUSH_SINK * e
+        const sy = 1 - (1 - CRUSH_SCALE_Y) * e
+        // widen slightly as it flattens so it reads as spreading rubble
+        const sxz = 1 + 0.18 * e
+        _scl.set(sxz, sy, sxz)
+        // yaw about vertical, then lean over a seeded horizontal axis
+        _euler.set(0, c.yaw, 0)
+        _quat.setFromEuler(_euler)
+        _q2.setFromAxisAngle(_axis.set(c.axX, 0, c.axZ), c.lean * e)
+        _quat.premultiply(_q2)
+      }
+      _mat.compose(_pos, _quat, _scl)
+      m.setMatrixAt(c.i, _mat)
+      matChanged = true
+    }
+    if (matChanged) m.instanceMatrix.needsUpdate = true
+
+    // dust puffs — one billboarded sprite per crushable, alive in the impact
+    // window [crushT, crushT + DUST_DUR], expanding + fading. Fully in t.
+    if (dust) {
+      for (let k = 0; k < crushables.length; k++) {
+        const c = crushables[k]
+        const active = frame.id === c.ep
+        const age = active ? t - c.crushT : -1
+        if (age < 0 || age > DUST_DUR) {
+          _pos.set(0, -1000, 0)
+          _scl.setScalar(0)
+          _quat.identity()
+          _mat.compose(_pos, _quat, _scl)
+          dust.setMatrixAt(k, _mat)
+          continue
+        }
+        const life = age / DUST_DUR
+        const size = (6 + life * 22) * Math.max(0.7, halfExt / 4)
+        _pos.set(c.x, halfExt * 0.5 + life * 6, c.z)
+        _quat.copy(camera.quaternion) // billboard
+        _scl.set(size, size, 1)
+        _mat.compose(_pos, _quat, _scl)
+        dust.setMatrixAt(k, _mat)
+      }
+      dust.instanceMatrix.needsUpdate = true
+    }
+  })
+
+  const dustMat = useMemo(
+    () =>
+      new MeshBasicMaterial({
+        color: 0x8a7a66, // grey-brown
+        map: DUST_TEX,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+      }),
+    [],
+  )
+
   return (
-    <instancedMesh
-      ref={ref}
-      args={[geometry, undefined, Math.max(1, placements.length)]}
-      castShadow
-      receiveShadow
-      frustumCulled={false}
-    >
-      <meshStandardMaterial vertexColors roughness={roughness} metalness={0} />
-    </instancedMesh>
+    <group>
+      <instancedMesh
+        ref={ref}
+        args={[geometry, undefined, Math.max(1, placements.length)]}
+        castShadow
+        receiveShadow
+        frustumCulled={false}
+      >
+        <meshStandardMaterial vertexColors roughness={roughness} metalness={0} />
+      </instancedMesh>
+      {hasCrush && (
+        <instancedMesh
+          ref={dustRef}
+          args={[DUST_PLANE, dustMat, crushables.length]}
+          frustumCulled={false}
+        />
+      )}
+    </group>
   )
 }
 
@@ -736,6 +971,26 @@ export function Town() {
       for (const p of all) g[p.a].push(p)
       return g
     }
+
+    // one-time report of how many buildings each episode's titans crush,
+    // mirroring the per-archetype test in ArchetypeMesh (same half-extents).
+    const halfExts = district.geos.map((g) => {
+      g.computeBoundingBox()
+      const bb = g.boundingBox
+      return bb ? 0.6 * Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) : 3
+    })
+    let ep1n = 0
+    let ep2n = 0
+    for (const p of dAll) {
+      if (!p.crushEp) continue
+      const tracks = p.crushEp === 'ep1' ? EP1_TITAN_TRACKS : EP2_TITAN_TRACKS
+      if (earliestCrushT(p.x, p.z, halfExts[p.a], tracks) !== undefined) {
+        if (p.crushEp === 'ep1') ep1n++
+        else ep2n++
+      }
+    }
+    console.debug(`[Town] crushable buildings — ep1(Shiganshina): ${ep1n}, ep2(Trost): ${ep2n}`)
+
     return {
       districtGroups: group(dAll, district.geos.length),
       mitrasGroups: group(mAll, mitrasArch.geos.length),

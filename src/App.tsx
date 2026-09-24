@@ -12,6 +12,7 @@ import { Gore } from './scene/Gore'
 import { Fires } from './scene/Fires'
 import { Soldiers } from './scene/Soldiers'
 import { Boulder } from './scene/Boulder'
+import { Impacts } from './scene/Impacts'
 import { IncidentDriver, getFrame } from './incidents/driver'
 import { KILL_EVENTS, FIRE_SPOTS } from './incidents/ep1'
 import { EP2_KILL_EVENTS, EP2_FIRE_SPOTS } from './incidents/ep2'
@@ -189,6 +190,7 @@ export default function App() {
           <Titans />
           <Soldiers />
           <Boulder />
+          <Impacts />
           <Gore events={KILL_EVENTS} forId="ep1" />
           <Gore events={EP2_KILL_EVENTS} forId="ep2" />
           <Fires spots={FIRE_SPOTS} forId="ep1" />

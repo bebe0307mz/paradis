@@ -6,7 +6,14 @@ import * as THREE from 'three'
 import { useParadis } from '../state/store'
 import { getFrame } from '../incidents/driver'
 import { SHI_INNER_GATE, SHI_OUTER_GATE, TRO_INNER_GATE, TRO_OUTER_GATE } from '../world/constants'
-import { EP2_ERUPT } from '../incidents/ep2'
+import {
+  EP2_ERUPT,
+  EP2_T_LIFT,
+  EP2_T_CARRY,
+  EP2_T_SLAM,
+  EP2_ENGAGE_SHOTS,
+  EP2_PUNCHES,
+} from '../incidents/ep2'
 
 const FLY_DUR = 2.4
 const GZ = SHI_INNER_GATE[2] // 12000 — inner gate through Wall Maria
@@ -139,7 +146,46 @@ const SHOTS_EP1: Shot[] = [
 
 // ---------------------------------------------------------------------------
 // Episode 2 — The Battle of Trost
+//
+// Trost geography (all times DERIVED — never hardcode 63/66/77):
+//   inner gate  z=9500 (GZ2)  — Wall Rose, INTACT all episode
+//   outer gate  z=10050 (OZ2) — BREACHED at t≈14.2, this is what the boulder seals
+// The rogue carries the boulder from z≈9730 toward the breach at +z, so the
+// camera must sit BEHIND him (smaller z) to keep the smoking broken gate ahead.
 // ---------------------------------------------------------------------------
+
+// the two rubble-fire markers flanking the breach (placed so the destination
+// reads as "the broken one") and the breach aim point itself
+const BREACH: [number, number, number] = [0, 25, OZ2 - 10]
+
+const ENGAGE_A = EP2_ENGAGE_SHOTS[0] // 21.8→28.4, Garrison's first nape kill
+const ENGAGE_B = EP2_ENGAGE_SHOTS[1] // 66.6→72.4, escort fight during the lift
+
+// ride-along: hold a slowly drifting side vantage that frames both the soldier's
+// cable streaks and the titan's nape. Do NOT orbit with the soldier (nauseating).
+function rideAlong(soldier: number, titan: number, f: number, pos: THREE.Vector3, tgt: THREE.Vector3) {
+  const fr = getFrame()
+  const s = fr.soldiers[soldier]
+  const p = fr.pures[titan]
+  if (!s || !p) {
+    tgt.set(0, 12, OZ2 - 40)
+    pos.set(30, 18, OZ2 - 90)
+    return
+  }
+  const h = p.height ?? 10
+  const napeY = h * 0.85
+  // midpoint between soldier and the titan's nape — the fight, framed
+  const mx = (s.pos[0] + p.pos[0]) * 0.5
+  const my = (s.pos[1] + napeY) * 0.5 + 2
+  const mz = (s.pos[2] + p.pos[2]) * 0.5
+  tgt.set(mx, my, mz)
+  // side vantage drifting slowly across the window (f drives a gentle arc so it
+  // never locks to the orbiting soldier). Height clears the ~14m rooflines —
+  // the fight is IN the town and a rooftop through the lens reads as a brown wall.
+  const lateral = 26 - f * 5 // 26 → 21m, easing in
+  pos.set(mx + lateral, Math.max(my + 9, 18), mz - 26 + f * 9)
+}
+
 const SHOTS_EP2: Shot[] = [
   // 1 — calm drift over Trost, the gate ahead
   {
@@ -162,15 +208,22 @@ const SHOTS_EP2: Shot[] = [
   // 3 — the Garrison answers: soldiers zipping past, titans in the breach
   {
     t0: 16.5,
-    t1: 25,
+    t1: ENGAGE_A.t0,
     eval: (f, pos, tgt) => {
       lerp3(pos, -150, 36, OZ2 - 310, -95, 24, OZ2 - 270, f)
       tgt.set(0, 18, OZ2 - 20)
     },
   },
-  // 4 — squad wipe: track the bearded titan that takes Eren
+  // 4 — RIDE-ALONG #1: on the cable with the Garrison's first nape kill (soldier
+  //     orbits the titan; dive-cut at t=26). Human-scale combat, not miniatures.
   {
-    t0: 25,
+    t0: ENGAGE_A.t0,
+    t1: ENGAGE_A.t1,
+    eval: (f, pos, tgt) => rideAlong(ENGAGE_A.soldier, ENGAGE_A.titan, f, pos, tgt),
+  },
+  // 5 — squad wipe: track the bearded titan that takes Eren, into the eruption
+  {
+    t0: ENGAGE_A.t1,
     t1: 37,
     eval: (_f, pos, tgt) => {
       const p = getFrame().pures[1]
@@ -184,7 +237,7 @@ const SHOTS_EP2: Shot[] = [
       }
     },
   },
-  // 5 — the eruption, up close and low
+  // 6 — the eruption, up close and low
   {
     t0: 37,
     t1: 41.5,
@@ -193,13 +246,30 @@ const SHOTS_EP2: Shot[] = [
       pos.set(EP2_ERUPT.x + 26, 9, EP2_ERUPT.z + 34)
     },
   },
-  // 6 — the fistfight: drone-tracking the Rogue Titan
+  // 7 — the fistfight: LOW-ANGLE punch impacts (looking UP at 15m of muscle),
+  //     wider sprint tracking between them. Runs until the lift begins.
   {
     t0: 41.5,
-    t1: 62,
+    t1: EP2_T_LIFT,
     eval: (_f, pos, tgt) => {
+      const now = getFrame().t
       const r = getFrame().rogue
-      if (r?.visible) {
+      // is a punch landing right now? (1.5s before → 1.2s after impact)
+      let punch: { t: number; x: number; z: number; h: number } | null = null
+      for (const p of EP2_PUNCHES) {
+        if (now >= p.t - 1.5 && now <= p.t + 1.2) {
+          punch = p
+          break
+        }
+      }
+      if (punch) {
+        // LOW and CLOSE: just above the rooflines so the fight isn't hidden
+        // behind houses, close enough that 15m of titan fills the frame
+        tgt.set(punch.x, punch.h * 0.62, punch.z)
+        const ang = punch.t // deterministic per-punch bearing so angles vary
+        pos.set(punch.x + Math.cos(ang) * 48, 13, punch.z + Math.sin(ang) * 48)
+      } else if (r?.visible) {
+        // wider tracking shot of the rogue sprinting between kills
         tgt.set(r.pos[0], 9, r.pos[2])
         pos.set(r.pos[0] + 24, 19, r.pos[2] + 34)
       } else {
@@ -208,33 +278,69 @@ const SHOTS_EP2: Shot[] = [
       }
     },
   },
-  // 7 — the carry: backing down the street ahead of the boulder
+  // 8 — the lift, then cut to RIDE-ALONG #2: the escort fight raging while the
+  //     rogue crouches at the boulder. Cut away to the carry at EP2_T_CARRY.
   {
-    t0: 62,
-    t1: 77,
-    eval: (_f, pos, tgt) => {
+    t0: EP2_T_LIFT,
+    t1: EP2_T_CARRY,
+    eval: (f, pos, tgt) => {
+      const now = getFrame().t
+      if (now >= ENGAGE_B.t0 && now <= ENGAGE_B.t1) {
+        rideAlong(ENGAGE_B.soldier, ENGAGE_B.titan, f, pos, tgt)
+        return
+      }
+      // brief beat on the rogue crouching to grab the boulder
       const r = getFrame().rogue
       if (r?.visible) {
-        tgt.set(r.pos[0], 13, r.pos[2])
-        pos.set(r.pos[0] + 30, 18, Math.min(r.pos[2] + 78, OZ2 - 35))
+        tgt.set(r.pos[0], 11, r.pos[2])
+        pos.set(r.pos[0] + 26, 16, r.pos[2] - 40)
       } else {
-        tgt.set(-150, 12, GZ2 + 230)
-        pos.set(-120, 16, GZ2 + 290)
+        tgt.set(-150, 11, GZ2 + 230)
+        pos.set(-124, 16, GZ2 + 190)
       }
     },
   },
-  // 8 — the slam, wide from the side
+  // 9 — THE CARRY (fixed): camera BEHIND the rogue (−z), the smoking broken
+  //     outer gate dead ahead the whole march. He walks +z toward the breach;
+  //     target blends from him toward BREACH so the destination reads correctly.
   {
-    t0: 77,
-    t1: 84,
-    eval: (f, pos, tgt) => {
-      lerp3(pos, 175, 62, OZ2 - 170, 150, 52, OZ2 - 130, f)
-      tgt.set(0, 26, OZ2)
+    t0: EP2_T_CARRY,
+    t1: EP2_T_SLAM,
+    eval: (_f, pos, tgt) => {
+      const r = getFrame().rogue
+      const now = getFrame().t
+      const k = smootherstep((now - EP2_T_CARRY) / Math.max(0.1, EP2_T_SLAM - EP2_T_CARRY))
+      if (r?.visible) {
+        // camera trails him on −z so his back, the boulder, and the breach beyond
+        // are all in frame; never between the rogue and the breach facing back
+        pos.set(r.pos[0] - 40, 21, r.pos[2] - 62)
+        // aim from the rogue's upper body toward the breach as he closes on it
+        tgt.set(
+          r.pos[0] + (BREACH[0] - r.pos[0]) * k,
+          14 + (BREACH[1] - 14) * k,
+          r.pos[2] + 24 + (BREACH[2] - (r.pos[2] + 24)) * k,
+        )
+      } else {
+        lerp3(pos, -190, 21, GZ2 + 200, -40, 21, OZ2 - 62, k)
+        tgt.set(BREACH[0], BREACH[1], BREACH[2])
+      }
     },
   },
-  // 9 — victory pull-back over the held district
+  // 10 — the slam: from inside the town looking AT the outer gate, the rogue
+  //      silhouetted against the breach as the boulder goes in
   {
-    t0: 84,
+    t0: EP2_T_SLAM,
+    t1: EP2_T_SLAM + 7,
+    eval: (f, pos, tgt) => {
+      // dolly along the street toward the breach, low enough to catch the
+      // silhouette against the smoking gap
+      lerp3(pos, 46, 20, OZ2 - 200, 30, 16, OZ2 - 150, f)
+      tgt.set(0, 22, OZ2)
+    },
+  },
+  // 11 — victory pull-back over the held district
+  {
+    t0: EP2_T_SLAM + 7,
     t1: 1e9,
     eval: (f, pos, tgt) => {
       const k = smootherstep(Math.min(1, f))
