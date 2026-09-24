@@ -16,7 +16,6 @@
 import { useMemo, useRef, useLayoutEffect } from 'react'
 import { useFrame } from '@react-three/fiber'
 import {
-  AdditiveBlending,
   CanvasTexture,
   Color,
   DoubleSide,
@@ -35,7 +34,6 @@ import { EP2_PUNCHES, EP2_ROGUE_STEPS } from '../incidents/ep2'
 // module-scope scratch — reused every frame, never reallocated
 // ---------------------------------------------------------------------------
 const dummy = new Object3D()
-const scratchColor = new Color()
 const HIDDEN_Y = -1000
 
 function hide(mesh: InstancedMesh, i: number) {
